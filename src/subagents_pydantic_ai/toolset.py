@@ -288,7 +288,7 @@ def create_subagent_toolset(  # noqa: C901
         ctx: RunContext[SubAgentDepsProtocol],
         description: str,
         subagent_type: str,
-        mode: ExecutionMode = "sync",
+        mode: ExecutionMode = "auto",
         priority: TaskPriority = TaskPriority.NORMAL,
         complexity: Literal["simple", "moderate", "complex"] | None = None,
         requires_user_context: bool = False,
