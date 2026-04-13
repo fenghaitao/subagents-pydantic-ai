@@ -697,7 +697,9 @@ async def _run_async(
         f"Task started in background.\n"
         f"Task ID: {task_id}\n"
         f"Subagent: {config['name']}\n"
-        f"Use check_task('{task_id}') to check status."
+        f"Call check_task('{task_id}') to poll status. Keep calling it until status is "
+        f"'completed' or 'failed'. If status is 'waiting_for_answer', call "
+        f"answer_subagent('{task_id}', <answer>) to unblock it."
     )
 
 
