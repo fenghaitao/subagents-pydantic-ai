@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai import UsageLimits
 
 from subagents_pydantic_ai import SubAgentConfig, create_subagent_toolset
 from subagents_pydantic_ai.toolset import (
@@ -762,6 +763,31 @@ class TestRunSync:
 
         assert result == "task completed"
         assert mock_agent.iter_count == 1
+        assert "usage_limits" not in mock_agent.iter_calls[0]
+
+    @pytest.mark.asyncio
+    async def test_run_sync_forwards_usage_limits(self):
+        """Static usage limits are forwarded to the subagent run."""
+        usage_limits = UsageLimits(request_limit=3, total_tokens_limit=1000)
+        mock_agent = FakeAgent(result=MockResult("task completed"))
+
+        config = SubAgentConfig(
+            name="test",
+            description="Test agent",
+            instructions="Do test",
+        )
+
+        result = await _run_sync(
+            agent=mock_agent,
+            config=config,
+            description="do the thing",
+            deps=MockDeps(),
+            task_id="task-123",
+            usage_limits=usage_limits,
+        )
+
+        assert result == "task completed"
+        assert mock_agent.iter_calls[0]["usage_limits"] is usage_limits
 
     @pytest.mark.asyncio
     async def test_run_sync_error(self):
@@ -905,6 +931,40 @@ class TestRunAsync:
         assert handle.result == "task completed"
         assert handle.usage is not None
         assert handle.usage.input_tokens == 100
+
+    @pytest.mark.asyncio
+    async def test_run_async_forwards_usage_limits(self):
+        """Async background execution forwards usage limits to the run."""
+        from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
+
+        usage_limits = UsageLimits(request_limit=2, total_tokens_limit=500)
+        mock_agent = FakeAgent(result=MockResult("task completed"))
+
+        config = SubAgentConfig(
+            name="test",
+            description="Test agent",
+            instructions="Do test",
+        )
+
+        message_bus = InMemoryMessageBus()
+        task_manager = TaskManager(message_bus=message_bus)
+
+        await _run_async(
+            agent=mock_agent,
+            config=config,
+            description="do the thing",
+            deps=MockDeps(),
+            task_id="task-ul",
+            task_manager=task_manager,
+            message_bus=message_bus,
+            usage_limits=usage_limits,
+        )
+        await asyncio.sleep(0.1)
+
+        handle = task_manager.get_handle("task-ul")
+        assert handle is not None
+        assert handle.status == TaskStatus.COMPLETED
+        assert mock_agent.iter_calls[0]["usage_limits"] is usage_limits
 
     @pytest.mark.asyncio
     async def test_run_async_task_fails(self):
