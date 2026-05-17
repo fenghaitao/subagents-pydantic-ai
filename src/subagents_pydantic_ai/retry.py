@@ -70,8 +70,10 @@ class RetryConfig:
 
     Attributes:
         max_retries: Number of *additional* attempts after the first
-            failure. ``0`` disables retrying entirely (the default, so
-            existing behaviour is unchanged unless opted in).
+            failure. Defaults to ``3`` so subagents are resilient to
+            flaky model gateways/networks out of the box. Set ``0`` to
+            disable retrying entirely (the legacy ``agent.run()``
+            opt-out path).
         initial_delay: Seconds to wait before the first retry.
         max_delay: Upper bound for the backoff delay, in seconds.
         backoff_multiplier: The delay is multiplied by this each attempt.
@@ -82,7 +84,7 @@ class RetryConfig:
             ``None`` uses :func:`is_transient_error`.
     """
 
-    max_retries: int = 0
+    max_retries: int = 3
     initial_delay: float = 1.0
     max_delay: float = 30.0
     backoff_multiplier: float = 2.0
@@ -94,10 +96,11 @@ class RetryConfig:
         """Build a :class:`RetryConfig` from a :class:`SubAgentConfig`.
 
         Missing keys fall back to the dataclass defaults, so a config
-        without any ``retry_*`` keys yields a disabled policy.
+        without any ``retry_*`` keys yields the default policy (3
+        retries with exponential backoff).
         """
         return cls(
-            max_retries=config.get("max_retries", 0),
+            max_retries=config.get("max_retries", 3),
             initial_delay=config.get("retry_initial_delay", 1.0),
             max_delay=config.get("retry_max_delay", 30.0),
             backoff_multiplier=config.get("retry_backoff_multiplier", 2.0),
