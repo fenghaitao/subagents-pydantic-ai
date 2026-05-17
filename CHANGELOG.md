@@ -9,18 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Auto-retry for transient subagent failures** — opt-in resilience for flaky model gateways/proxies (e.g. a LiteLLM gateway returning 502/503/429 or dropping connections). New `subagents_pydantic_ai.retry` module:
+- **Auto-retry for transient subagent failures** — subagents are resilient to flaky model gateways/proxies (e.g. a LiteLLM gateway returning 502/503/429 or dropping connections) **by default**. New `subagents_pydantic_ai.retry` module:
   - `is_transient_error(exc)` — classifies retryable failures: `ModelHTTPError` with a 408/409/425/429/5xx status, and non-HTTP `ModelAPIError` (transport/connection errors). Auth/4xx, `UnexpectedModelBehavior`, `UsageLimitExceeded`, validation errors and task cancellation are **not** retried.
-  - `RetryConfig` (frozen dataclass) + `RetryConfig.from_config()` — exponential backoff with configurable initial/max delay, multiplier, full jitter, and an optional custom `retry_on` predicate.
+  - `RetryConfig` (frozen dataclass) + `RetryConfig.from_config()` — exponential backoff with configurable initial/max delay, multiplier, full jitter, and an optional custom `retry_on` predicate. Defaults to **3 retries** (`max_retries=3`).
   - `compute_backoff_delay()` — pure backoff helper with an injectable RNG.
   - `run_with_retry()` — drives the subagent and, on a transient failure, **replays the accumulated `message_history` so the subagent resumes instead of restarting from scratch**. Uses `Agent.iter()` rather than `capture_run_messages()` to recover the failed run's messages, sidestepping [pydantic/pydantic-ai#1568](https://github.com/pydantic/pydantic-ai/issues/1568) (nested `capture_run_messages` contexts do not work, and subagents always run nested inside the parent agent's run).
   - Exported: `RetryConfig`, `run_with_retry`, `is_transient_error`, `compute_backoff_delay`.
-- **Retry configuration on `SubAgentConfig`** — `max_retries`, `retry_initial_delay`, `retry_max_delay`, `retry_backoff_multiplier`, `retry_jitter`, `retry_on`. Defaults keep retrying **disabled** (`max_retries=0`), so behaviour is unchanged unless explicitly opted in. Consumers like pydantic-deep get this for free through the re-exported `SubAgentConfig` with no code change.
+- **Retry configuration on `SubAgentConfig`** — `max_retries` (default `3`), `retry_initial_delay`, `retry_max_delay`, `retry_backoff_multiplier`, `retry_jitter`, `retry_on`. Set `max_retries=0` to disable retrying (the legacy `agent.run()` opt-out path). Consumers like pydantic-deep get this for free through the re-exported `SubAgentConfig` with no code change.
 - **`TaskStatus.RETRYING`** and **`TaskHandle.retry_count`** — async-mode tasks surface in-progress retries via `check_task`; the transient error message is cleared from the handle once a retry eventually succeeds.
 
 ### Changed
 
-- **`_run_sync` / `_run_async` now execute the subagent through `run_with_retry`.** With `max_retries=0` (the default) this is **exactly the legacy `agent.run()` path** — no behaviour change, no extra cost, message-capture semantics unchanged. Only when retries are enabled does execution switch to the `Agent.iter()` resume-with-history path. `asyncio.CancelledError` is never caught by the retry loop, so soft/hard task cancellation is unaffected.
+- **`_run_sync` / `_run_async` now execute the subagent through `run_with_retry`.** With retries enabled (the default, `max_retries=3`) execution is driven via `Agent.iter()` from the first attempt, so a transient failure resumes with the full accumulated message history. Only genuinely transient errors are retried; non-transient errors fail immediately exactly as before. With `max_retries=0` it is **exactly the legacy `agent.run()` path** (opt-out, no behaviour change). `asyncio.CancelledError` is never caught by the retry loop, so soft/hard task cancellation is unaffected.
 
 ## [0.2.2] - 2026-04-20
 

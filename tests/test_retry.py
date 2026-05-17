@@ -143,7 +143,7 @@ async def test_is_transient_error(exc: BaseException, expected: bool) -> None:
 
 async def test_retry_config_from_config_defaults() -> None:
     cfg = RetryConfig.from_config(SubAgentConfig(name="a", description="d", instructions="i"))
-    assert cfg.max_retries == 0
+    assert cfg.max_retries == 3
     assert cfg.initial_delay == 1.0
     assert cfg.max_delay == 30.0
     assert cfg.backoff_multiplier == 2.0

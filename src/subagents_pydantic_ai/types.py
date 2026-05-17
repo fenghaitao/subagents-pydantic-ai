@@ -189,10 +189,10 @@ class SubAgentConfig(TypedDict, total=False):
             through for consumers like pydantic-deep to use freely.
             Example keys: ``memory``, ``team``, ``cost_budget``.
         max_retries: Number of extra attempts after a transient failure
-            (flaky gateway/network). ``0`` (default) disables retrying
-            and keeps the legacy ``agent.run()`` path unchanged. When
-            ``> 0``, retries resume with the full message history so
-            partial progress is not lost.
+            (flaky gateway/network). Defaults to ``3`` — subagents are
+            resilient out of the box; retries resume with the full
+            message history so partial progress is not lost. Set ``0``
+            to disable retrying (legacy ``agent.run()`` opt-out path).
         retry_initial_delay: Seconds before the first retry (default 1.0).
         retry_max_delay: Cap for the backoff delay (default 30.0).
         retry_backoff_multiplier: Delay growth factor per attempt
