@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
+from pydantic_ai import RunContext, UsageLimits
 from pydantic_ai.models import Model
 from typing_extensions import NotRequired, TypedDict
 
@@ -245,6 +246,14 @@ class SubAgentConfig(TypedDict, total=False):
     retry_backoff_multiplier: NotRequired[float]
     retry_jitter: NotRequired[bool]
     retry_on: NotRequired[Callable[[BaseException], bool]]
+
+
+UsageLimitsFactory = Callable[[RunContext[Any], SubAgentConfig], "UsageLimits | None"]
+"""Factory function that resolves usage limits for a delegated subagent task.
+
+Called once per delegated task with the parent run context and selected
+subagent config. Return ``None`` to run that task without explicit limits.
+"""
 
 
 def _generate_message_id() -> str:

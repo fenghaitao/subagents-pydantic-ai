@@ -145,6 +145,9 @@ from subagents_pydantic_ai.types import (
     ToolsetFactory as ToolsetFactory,
 )
 from subagents_pydantic_ai.types import (
+    UsageLimitsFactory as UsageLimitsFactory,
+)
+from subagents_pydantic_ai.types import (
     decide_execution_mode as decide_execution_mode,
 )
 
@@ -165,6 +168,7 @@ __all__ = [
     "TaskCharacteristics",
     "ExecutionMode",
     "ToolsetFactory",
+    "UsageLimitsFactory",
     "AskUserCallback",
     "CompiledSubAgent",
     # Functions

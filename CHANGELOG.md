@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Exported: `RetryConfig`, `run_with_retry`, `is_transient_error`, `compute_backoff_delay`.
 - **Retry configuration on `SubAgentConfig`** — `max_retries` (default `3`), `retry_initial_delay`, `retry_max_delay`, `retry_backoff_multiplier`, `retry_jitter`, `retry_on`. Set `max_retries=0` to disable retrying (the legacy `agent.run()` opt-out path). Consumers like pydantic-deep get this for free through the re-exported `SubAgentConfig` with no code change.
 - **`TaskStatus.RETRYING`** and **`TaskHandle.retry_count`** — async-mode tasks surface in-progress retries via `check_task`; the transient error message is cleared from the handle once a retry eventually succeeds.
+- **Usage-limits forwarding for delegated subagents** ([#25](https://github.com/vstorm-co/subagents-pydantic-ai/pull/25)) — `usage_limits` on `create_subagent_toolset()` and `SubAgentCapability`, accepting a static `pydantic_ai.UsageLimits` or a per-task `UsageLimitsFactory` `(RunContext, SubAgentConfig) -> UsageLimits | None` resolved once per delegated task. Limits are forwarded to sync and async runs and are **honoured on every retry attempt**. New public `UsageLimitsFactory` type alias (exported).
 
 ### Changed
 

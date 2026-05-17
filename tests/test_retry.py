@@ -94,7 +94,7 @@ class ScriptedAgent:
         self.run_calls: list[dict[str, Any]] = []
 
     def iter(self, prompt: Any, *, message_history: Any = None, **kwargs: Any) -> _ScriptedCM:
-        self.iter_calls.append({"prompt": prompt, "message_history": message_history})
+        self.iter_calls.append({"prompt": prompt, "message_history": message_history, **kwargs})
         return _ScriptedCM(self._steps.pop(0))
 
     async def run(self, prompt: Any, **kwargs: Any) -> Any:
@@ -493,3 +493,36 @@ async def test_run_async_retries_exhausted_fails() -> None:
     assert handle.status == TaskStatus.FAILED
     assert handle.retry_count == 1
     assert "503" in str(handle.error)
+
+
+# --------------------------------------------------------------------------- #
+# run_kwargs (e.g. usage_limits) survive every retry attempt
+# --------------------------------------------------------------------------- #
+
+
+async def test_run_kwargs_forwarded_on_every_attempt() -> None:
+    """Caller run_kwargs (deps, usage_limits, ...) reach the agent on each try.
+
+    Regression guard for the retry x usage-limits interaction: limits must
+    not be dropped when a transient failure triggers a resume via iter().
+    """
+    sentinel_limits = object()
+    agent = ScriptedAgent(
+        [
+            {"iter_raise": ModelHTTPError(503, "m"), "messages": [{"x": 1}]},
+            {"result": FakeResult("recovered")},
+        ]
+    )
+
+    result = await run_with_retry(
+        agent,
+        "go",
+        run_kwargs={"deps": 1, "usage_limits": sentinel_limits},
+        retry=RetryConfig(max_retries=2, jitter=False),
+        sleep=_no_sleep,
+    )
+
+    assert result.output == "recovered"
+    assert len(agent.iter_calls) == 2
+    assert agent.iter_calls[0]["usage_limits"] is sentinel_limits
+    assert agent.iter_calls[1]["usage_limits"] is sentinel_limits
