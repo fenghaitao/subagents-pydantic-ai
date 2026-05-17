@@ -30,6 +30,7 @@ from subagents_pydantic_ai.prompts import (
     get_task_instructions_prompt,
 )
 from subagents_pydantic_ai.protocols import SubAgentDepsProtocol
+from subagents_pydantic_ai.retry import RetryConfig, run_with_retry
 from subagents_pydantic_ai.types import (
     AskUserCallback,
     CompiledSubAgent,
@@ -625,7 +626,12 @@ async def _run_sync(
         run_kwargs["toolsets"] = extra_toolsets
 
     try:
-        result = await agent.run(prompt, **run_kwargs)
+        result = await run_with_retry(
+            agent,
+            prompt,
+            run_kwargs=run_kwargs,
+            retry=RetryConfig.from_config(config),
+        )
         return _serialize_output(result.output)
     except Exception as e:
         return f"Error executing task: {e}"
@@ -695,9 +701,21 @@ async def _run_async(
         if extra_toolsets:
             run_kwargs["toolsets"] = extra_toolsets
 
+        def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+            handle.status = TaskStatus.RETRYING
+            handle.retry_count = attempt
+            handle.error = f"Transient error (retry {attempt}): {exc}"
+
         try:
-            result = await agent.run(prompt, **run_kwargs)
+            result = await run_with_retry(
+                agent,
+                prompt,
+                run_kwargs=run_kwargs,
+                retry=RetryConfig.from_config(config),
+                on_retry=_on_retry,
+            )
             handle.result = _serialize_output(result.output)
+            handle.error = None
             if hasattr(result, "usage"):
                 handle.usage = result.usage()
             handle.status = TaskStatus.COMPLETED

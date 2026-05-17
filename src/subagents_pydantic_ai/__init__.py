@@ -90,6 +90,18 @@ from subagents_pydantic_ai.protocols import (
 from subagents_pydantic_ai.registry import (
     DynamicAgentRegistry as DynamicAgentRegistry,
 )
+from subagents_pydantic_ai.retry import (
+    RetryConfig as RetryConfig,
+)
+from subagents_pydantic_ai.retry import (
+    compute_backoff_delay as compute_backoff_delay,
+)
+from subagents_pydantic_ai.retry import (
+    is_transient_error as is_transient_error,
+)
+from subagents_pydantic_ai.retry import (
+    run_with_retry as run_with_retry,
+)
 from subagents_pydantic_ai.spec import (
     SubAgentSpec as SubAgentSpec,
 )
@@ -167,6 +179,11 @@ __all__ = [
     "TaskManager",
     # Registry
     "DynamicAgentRegistry",
+    # Retry
+    "RetryConfig",
+    "run_with_retry",
+    "is_transient_error",
+    "compute_backoff_delay",
     # Utilities
     "get_subagent_system_prompt",
     "get_task_instructions_prompt",
