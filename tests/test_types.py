@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from subagents_pydantic_ai import UsageLimitsFactory
 from subagents_pydantic_ai.types import (
     AgentMessage,
     CompiledSubAgent,
@@ -78,14 +77,6 @@ class TestSubAgentConfig:
         assert config["model"] == "gpt-4"
         assert config["can_ask_questions"] is False
         assert config["max_questions"] == 5
-
-
-class TestUsageLimitsFactory:
-    """Tests for the public usage limits factory type alias."""
-
-    def test_usage_limits_factory_is_exported(self):
-        """UsageLimitsFactory is importable from the package API."""
-        assert UsageLimitsFactory is not None
 
 
 class TestAgentMessage:

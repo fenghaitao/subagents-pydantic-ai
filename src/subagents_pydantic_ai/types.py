@@ -67,6 +67,9 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
     """Task was cancelled."""
 
+    RETRYING = "retrying"
+    """Task hit a transient error and is waiting to retry."""
+
 
 # Type aliases
 ExecutionMode = Literal["sync", "async", "auto"]
@@ -186,6 +189,20 @@ class SubAgentConfig(TypedDict, total=False):
             subagents-pydantic-ai does not read this field — it's carried
             through for consumers like pydantic-deep to use freely.
             Example keys: ``memory``, ``team``, ``cost_budget``.
+        max_retries: Number of extra attempts after a transient failure
+            (flaky gateway/network). Defaults to ``3`` — subagents are
+            resilient out of the box; retries resume with the full
+            message history so partial progress is not lost. Set ``0``
+            to disable retrying (legacy ``agent.run()`` opt-out path).
+        retry_initial_delay: Seconds before the first retry (default 1.0).
+        retry_max_delay: Cap for the backoff delay (default 30.0).
+        retry_backoff_multiplier: Delay growth factor per attempt
+            (default 2.0).
+        retry_jitter: Randomise the backoff delay in ``[0, delay]`` to
+            avoid a thundering herd (default ``True``).
+        retry_on: Custom predicate ``(exc) -> bool`` deciding whether an
+            exception is transient. Defaults to the built-in classifier
+            (``ModelHTTPError`` 5xx/429/... and non-HTTP ``ModelAPIError``).
 
     Example with builtin_tools:
         ```python
@@ -223,9 +240,15 @@ class SubAgentConfig(TypedDict, total=False):
     agent_kwargs: NotRequired[dict[str, Any]]
     context_files: NotRequired[list[str]]
     extra: NotRequired[dict[str, Any]]
+    max_retries: NotRequired[int]
+    retry_initial_delay: NotRequired[float]
+    retry_max_delay: NotRequired[float]
+    retry_backoff_multiplier: NotRequired[float]
+    retry_jitter: NotRequired[bool]
+    retry_on: NotRequired[Callable[[BaseException], bool]]
 
 
-UsageLimitsFactory = Callable[[RunContext[Any], SubAgentConfig], UsageLimits | None]
+UsageLimitsFactory = Callable[[RunContext[Any], SubAgentConfig], "UsageLimits | None"]
 """Factory function that resolves usage limits for a delegated subagent task.
 
 Called once per delegated task with the parent run context and selected
@@ -297,6 +320,8 @@ class TaskHandle:
     pending_question: str | None = None
     usage: Any = None
     """Token usage from the subagent run (``RunUsage`` from pydantic-ai)."""
+    retry_count: int = 0
+    """Number of transient-failure retries performed for this task."""
 
 
 @dataclass

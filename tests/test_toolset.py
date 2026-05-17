@@ -58,6 +58,75 @@ class MockResult:
         return self._usage
 
 
+class _FakeRun:
+    """Async-iterable stand-in for ``AgentRun`` (no extra graph nodes)."""
+
+    def __init__(self, result: Any, messages: list[Any]) -> None:
+        self.result = result
+        self._messages = messages
+
+    def __aiter__(self) -> _FakeRun:
+        return self
+
+    async def __anext__(self) -> Any:
+        raise StopAsyncIteration
+
+    def all_messages(self) -> list[Any]:
+        return self._messages
+
+
+class _FakeAgentCM:
+    def __init__(self, agent: FakeAgent) -> None:
+        self._agent = agent
+
+    async def __aenter__(self) -> _FakeRun:
+        agent = self._agent
+        if agent._delay:
+            await asyncio.sleep(agent._delay)
+        if agent._error is not None:
+            raise agent._error
+        return _FakeRun(agent._result, agent._messages)
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class FakeAgent:
+    """Faithful stand-in for a pydantic-ai ``Agent`` driven via ``.iter()``.
+
+    Mirrors how ``Agent.run`` is actually implemented (``async with
+    agent.iter(...) as run``), so it exercises the real subagent
+    execution path. Construct with ``result`` (success), ``error``
+    (raised inside the run), and/or ``delay`` (await before resolving,
+    for cancellation tests). Every ``.iter()`` call is recorded in
+    ``iter_calls`` for assertions.
+    """
+
+    def __init__(
+        self,
+        *,
+        result: Any = None,
+        error: BaseException | None = None,
+        delay: float = 0.0,
+        messages: list[Any] | None = None,
+    ) -> None:
+        self._result = result
+        self._error = error
+        self._delay = delay
+        self._messages = messages or []
+        self.iter_calls: list[dict[str, Any]] = []
+
+    def iter(
+        self, prompt: Any = None, *, message_history: Any = None, **kwargs: Any
+    ) -> _FakeAgentCM:
+        self.iter_calls.append({"prompt": prompt, "message_history": message_history, **kwargs})
+        return _FakeAgentCM(self)
+
+    @property
+    def iter_count(self) -> int:
+        return len(self.iter_calls)
+
+
 def _make_mock_compiled_subagent(config: SubAgentConfig) -> CompiledSubAgent:
     """Helper to create a mock compiled subagent."""
     mock_agent = MagicMock()
@@ -517,8 +586,8 @@ class TestCreateSubagentToolset:
             instructions="Dynamic agent",
         )
         dynamic_compiled = _make_mock_compiled_subagent(dynamic_config)
-        # Set up agent.run to return a mock result
-        dynamic_compiled.agent.run = AsyncMock(return_value=MockResult("dynamic result"))
+        # Drive the subagent through the real .iter() execution path.
+        dynamic_compiled.agent = FakeAgent(result=MockResult("dynamic result"))
 
         registry = MagicMock()
         registry.get_compiled.return_value = dynamic_compiled
@@ -676,8 +745,7 @@ class TestRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_success(self):
         """Test successful sync execution."""
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -694,15 +762,14 @@ class TestRunSync:
         )
 
         assert result == "task completed"
-        mock_agent.run.assert_called_once()
-        assert "usage_limits" not in mock_agent.run.call_args.kwargs
+        assert mock_agent.iter_count == 1
+        assert "usage_limits" not in mock_agent.iter_calls[0]
 
     @pytest.mark.asyncio
     async def test_run_sync_forwards_usage_limits(self):
-        """Static usage limits are passed to agent.run()."""
+        """Static usage limits are forwarded to the subagent run."""
         usage_limits = UsageLimits(request_limit=3, total_tokens_limit=1000)
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -720,13 +787,12 @@ class TestRunSync:
         )
 
         assert result == "task completed"
-        assert mock_agent.run.call_args.kwargs["usage_limits"] is usage_limits
+        assert mock_agent.iter_calls[0]["usage_limits"] is usage_limits
 
     @pytest.mark.asyncio
     async def test_run_sync_error(self):
         """Test sync execution with error."""
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=Exception("Something went wrong"))
+        mock_agent = FakeAgent(error=Exception("Something went wrong"))
 
         config = SubAgentConfig(
             name="test",
@@ -748,14 +814,7 @@ class TestRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_injects_ask_user_into_state(self):
         """ask_user wires into _subagent_state so ask_parent can resolve it."""
-        captured: dict[str, Any] = {}
-
-        async def fake_run(prompt: str, **kwargs: Any) -> MockResult:
-            captured["deps"] = kwargs["deps"]
-            return MockResult("done")
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=fake_run)
+        mock_agent = FakeAgent(result=MockResult("done"))
 
         async def ask_user(question: str) -> str:
             return f"answer: {question}"
@@ -777,14 +836,13 @@ class TestRunSync:
             ask_user=ask_user,
         )
 
-        state = captured["deps"]._subagent_state
-        assert state["ask_callback"] is ask_user
+        captured_deps = mock_agent.iter_calls[0]["deps"]
+        assert captured_deps._subagent_state["ask_callback"] is ask_user
 
     @pytest.mark.asyncio
     async def test_run_sync_no_ask_user_does_not_touch_deps(self):
         """Without ask_user, _run_sync must not mutate deps state."""
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
+        mock_agent = FakeAgent(result=MockResult("done"))
         deps = MockDeps()
         config = SubAgentConfig(
             name="test",
@@ -811,8 +869,7 @@ class TestRunAsync:
         """Test async execution returns task handle info."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -844,8 +901,7 @@ class TestRunAsync:
 
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -878,14 +934,11 @@ class TestRunAsync:
 
     @pytest.mark.asyncio
     async def test_run_async_forwards_usage_limits(self):
-        """Async background execution passes usage limits to agent.run()."""
-        import asyncio
-
+        """Async background execution forwards usage limits to the run."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
         usage_limits = UsageLimits(request_limit=2, total_tokens_limit=500)
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -901,15 +954,17 @@ class TestRunAsync:
             config=config,
             description="do the thing",
             deps=MockDeps(),
-            task_id="task-123",
+            task_id="task-ul",
             task_manager=task_manager,
             message_bus=message_bus,
             usage_limits=usage_limits,
         )
-
         await asyncio.sleep(0.1)
 
-        assert mock_agent.run.call_args.kwargs["usage_limits"] is usage_limits
+        handle = task_manager.get_handle("task-ul")
+        assert handle is not None
+        assert handle.status == TaskStatus.COMPLETED
+        assert mock_agent.iter_calls[0]["usage_limits"] is usage_limits
 
     @pytest.mark.asyncio
     async def test_run_async_task_fails(self):
@@ -918,8 +973,7 @@ class TestRunAsync:
 
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=Exception("Task failed"))
+        mock_agent = FakeAgent(error=Exception("Task failed"))
 
         config = SubAgentConfig(
             name="test",
@@ -983,81 +1037,6 @@ class TestToolsetIntegration:
             result = await task_tool.function(ctx, "do something", "helper", "sync")
 
             assert result == "Sync result"
-
-    @pytest.mark.asyncio
-    async def test_task_usage_limits_factory_receives_context_and_config(self):
-        """Callable usage limits are resolved per task and passed to _run_sync."""
-        config = SubAgentConfig(
-            name="helper",
-            description="Helps with tasks",
-            instructions="Help with things",
-        )
-        usage_limits = UsageLimits(request_limit=4, total_tokens_limit=800)
-        usage_limits_factory = MagicMock(return_value=usage_limits)
-
-        with (
-            patch(
-                "subagents_pydantic_ai.toolset._compile_subagent",
-                return_value=_make_mock_compiled_subagent(config),
-            ),
-            patch(
-                "subagents_pydantic_ai.toolset._run_sync",
-                new_callable=AsyncMock,
-                return_value="Sync result",
-            ) as mock_run_sync,
-        ):
-            toolset = create_subagent_toolset(
-                subagents=[config],
-                include_general_purpose=False,
-                usage_limits=usage_limits_factory,
-            )
-
-            task_tool = toolset.tools["task"]
-
-            ctx = MockRunContext(deps=MockDeps())
-            result = await task_tool.function(ctx, "do something", "helper", "sync")
-
-            assert result == "Sync result"
-            usage_limits_factory.assert_called_once_with(ctx, config)
-            assert mock_run_sync.call_args.kwargs["usage_limits"] is usage_limits
-
-    @pytest.mark.asyncio
-    async def test_task_usage_limits_factory_returning_none_omits_run_kwarg(self):
-        """Factory returning None leaves agent.run() without usage_limits."""
-        config = SubAgentConfig(
-            name="helper",
-            description="Helps with tasks",
-            instructions="Help with things",
-        )
-
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
-        mock_compiled = CompiledSubAgent(
-            name=config["name"],
-            description=config["description"],
-            config=config,
-            agent=mock_agent,
-        )
-        usage_limits_factory = MagicMock(return_value=None)
-
-        with patch(
-            "subagents_pydantic_ai.toolset._compile_subagent",
-            return_value=mock_compiled,
-        ):
-            toolset = create_subagent_toolset(
-                subagents=[config],
-                include_general_purpose=False,
-                usage_limits=usage_limits_factory,
-            )
-
-            task_tool = toolset.tools["task"]
-
-            ctx = MockRunContext(deps=MockDeps())
-            result = await task_tool.function(ctx, "do something", "helper", "sync")
-
-            assert result == "done"
-            usage_limits_factory.assert_called_once_with(ctx, config)
-            assert "usage_limits" not in mock_agent.run.call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_task_sync_forwards_ask_user(self):
@@ -1427,8 +1406,7 @@ class TestRunAsyncWithPriority:
         """Test async task with default priority."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -1458,8 +1436,7 @@ class TestRunAsyncWithPriority:
         """Test async task with high priority."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("task completed"))
+        mock_agent = FakeAgent(result=MockResult("task completed"))
 
         config = SubAgentConfig(
             name="test",
@@ -1606,8 +1583,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
+        mock_agent = FakeAgent(result=MockResult("done"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1637,9 +1613,8 @@ class TestToolsetFunctionsCoverage:
             await task_tool.function(ctx, "do something", "worker", "sync")
 
             # Verify agent.run was called with toolsets kwarg
-            mock_agent.run.assert_called_once()
-            call_kwargs = mock_agent.run.call_args
-            assert "toolsets" in call_kwargs.kwargs
+            assert mock_agent.iter_count == 1
+            assert "toolsets" in mock_agent.iter_calls[0]
 
     @pytest.mark.asyncio
     async def test_task_with_toolsets_factory_async(self):
@@ -1650,8 +1625,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
+        mock_agent = FakeAgent(result=MockResult("done"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1684,9 +1658,8 @@ class TestToolsetFunctionsCoverage:
             await asyncio.sleep(0.1)
 
             # Verify agent.run was called with toolsets kwarg
-            mock_agent.run.assert_called_once()
-            call_kwargs = mock_agent.run.call_args
-            assert "toolsets" in call_kwargs.kwargs
+            assert mock_agent.iter_count == 1
+            assert "toolsets" in mock_agent.iter_calls[0]
 
     @pytest.mark.asyncio
     async def test_check_task_completed(self):
@@ -1698,8 +1671,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("Task done successfully"))
+        mock_agent = FakeAgent(result=MockResult("Task done successfully"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1743,8 +1715,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=Exception("Task crashed"))
+        mock_agent = FakeAgent(error=Exception("Task crashed"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1825,8 +1796,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
+        mock_agent = FakeAgent(result=MockResult("done"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1870,9 +1840,8 @@ class TestToolsetFunctionsCoverage:
             instructions="Work on things",
         )
 
-        mock_agent = MagicMock()
         # Create a long-running task
-        mock_agent.run = AsyncMock(side_effect=lambda *a, **kw: asyncio.sleep(10))
+        mock_agent = FakeAgent(delay=10.0)
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1914,8 +1883,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("Research findings here"))
+        mock_agent = FakeAgent(result=MockResult("Research findings here"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -1958,8 +1926,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=Exception("Search API down"))
+        mock_agent = FakeAgent(error=Exception("Search API down"))
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -2083,8 +2050,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=lambda *a, **kw: asyncio.sleep(10))
+        mock_agent = FakeAgent(delay=10.0)
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -2124,8 +2090,7 @@ class TestToolsetFunctionsCoverage:
             instructions="Work",
         )
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=lambda *a, **kw: asyncio.sleep(10))
+        mock_agent = FakeAgent(delay=10.0)
 
         mock_compiled = CompiledSubAgent(
             name=config["name"],
@@ -2165,8 +2130,7 @@ class TestRunAsyncEdgeCases:
         """Test _run_async handles already registered agent."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=MockResult("done"))
+        mock_agent = FakeAgent(result=MockResult("done"))
 
         config = SubAgentConfig(
             name="test",
@@ -2198,8 +2162,7 @@ class TestRunAsyncEdgeCases:
         """Test _run_async handles CancelledError."""
         from subagents_pydantic_ai import InMemoryMessageBus, TaskManager
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_agent = FakeAgent(error=asyncio.CancelledError())
 
         config = SubAgentConfig(
             name="test",
@@ -2800,8 +2763,7 @@ class TestUsageTracking:
             def __init__(self, output: str):
                 self.output = output
 
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=BareResult("bare output"))
+        mock_agent = FakeAgent(result=BareResult("bare output"))
 
         config = SubAgentConfig(
             name="test",

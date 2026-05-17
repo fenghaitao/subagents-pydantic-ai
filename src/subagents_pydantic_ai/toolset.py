@@ -30,6 +30,7 @@ from subagents_pydantic_ai.prompts import (
     get_task_instructions_prompt,
 )
 from subagents_pydantic_ai.protocols import SubAgentDepsProtocol
+from subagents_pydantic_ai.retry import RetryConfig, run_with_retry
 from subagents_pydantic_ai.types import (
     AskUserCallback,
     CompiledSubAgent,
@@ -250,7 +251,8 @@ def create_subagent_toolset(  # noqa: C901
             runs. Pass a ``UsageLimits`` instance to reuse the same limits for
             every task, or a factory called once per task with the parent run
             context and selected subagent config. A factory may return ``None``
-            to run that task without explicit limits.
+            to run that task without explicit limits. Limits are honoured on
+            every retry attempt as well.
 
     Returns:
         FunctionToolset configured with subagent management tools.
@@ -616,8 +618,8 @@ async def _run_sync(
             ``_subagent_state["ask_callback"]`` so `ask_parent` resolves to
             it. The parent agent cannot answer directly in sync mode because
             its run loop is blocked here.
-        usage_limits: Optional pydantic-ai usage limits to pass to
-            ``agent.run()``.
+        usage_limits: Optional pydantic-ai usage limits forwarded to the
+            subagent run (honoured on every retry attempt).
 
     Returns:
         The subagent's response.
@@ -643,7 +645,12 @@ async def _run_sync(
         run_kwargs["usage_limits"] = usage_limits
 
     try:
-        result = await agent.run(prompt, **run_kwargs)
+        result = await run_with_retry(
+            agent,
+            prompt,
+            run_kwargs=run_kwargs,
+            retry=RetryConfig.from_config(config),
+        )
         return _serialize_output(result.output)
     except Exception as e:
         return f"Error executing task: {e}"
@@ -673,8 +680,8 @@ async def _run_async(
         message_bus: Message bus for communication.
         priority: Task priority level.
         extra_toolsets: Additional toolsets to pass to agent.run().
-        usage_limits: Optional pydantic-ai usage limits to pass to
-            ``agent.run()``.
+        usage_limits: Optional pydantic-ai usage limits forwarded to the
+            subagent run (honoured on every retry attempt).
 
     Returns:
         Task handle information as string.
@@ -718,9 +725,21 @@ async def _run_async(
         if usage_limits is not None:
             run_kwargs["usage_limits"] = usage_limits
 
+        def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+            handle.status = TaskStatus.RETRYING
+            handle.retry_count = attempt
+            handle.error = f"Transient error (retry {attempt}): {exc}"
+
         try:
-            result = await agent.run(prompt, **run_kwargs)
+            result = await run_with_retry(
+                agent,
+                prompt,
+                run_kwargs=run_kwargs,
+                retry=RetryConfig.from_config(config),
+                on_retry=_on_retry,
+            )
             handle.result = _serialize_output(result.output)
+            handle.error = None
             if hasattr(result, "usage"):
                 handle.usage = result.usage()
             handle.status = TaskStatus.COMPLETED
