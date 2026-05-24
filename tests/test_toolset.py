@@ -2102,9 +2102,7 @@ class TestToolsetFunctionsCoverage:
 
             # Generous timeout — should return as soon as fast finishes,
             # not wait for the 100s slow_coro.
-            result = await wait_tool.function(
-                ctx, ["fast-1", "slow-1"], 5.0, "any"
-            )
+            result = await wait_tool.function(ctx, ["fast-1", "slow-1"], 5.0, "any")
 
             assert "mode=any" in result
             assert "1/2 finished" in result
@@ -2177,9 +2175,7 @@ class TestToolsetFunctionsCoverage:
             tm.create_task("fail-1", failing_coro(), fail_handle)
             tm.create_task("slow-2", slow_coro(), slow_handle)
 
-            result = await wait_tool.function(
-                ctx, ["fail-1", "slow-2"], 5.0, "any"
-            )
+            result = await wait_tool.function(ctx, ["fail-1", "slow-2"], 5.0, "any")
 
             assert "mode=any" in result
             assert "1/2 finished" in result
@@ -2235,6 +2231,88 @@ class TestToolsetFunctionsCoverage:
             # No "still running" segment when everything is done
             assert "still running" not in result
             assert result.count("COMPLETED") == 2
+
+    @pytest.mark.asyncio
+    async def test_wait_tasks_does_not_cascade_cancel_to_workers(self):
+        """Cancelling wait_tasks must NOT cancel the workers it is waiting on.
+
+        Regression for the silent-CANCELLED bug: the previous
+        ``asyncio.wait_for(asyncio.gather(...))`` propagated cancellation
+        through ``wait_for`` → ``gather`` → child tasks, so a sibling-cancel
+        from pydantic-ai's ``_call_tools`` (or any other outer cancel) would
+        silently kill all in-flight subagents.
+        """
+        config = SubAgentConfig(name="worker", description="Worker", instructions="Work")
+        mock_agent = FakeAgent(result=MockResult("done"), delay=0.1)
+        mock_compiled = CompiledSubAgent(
+            name=config["name"],
+            description=config["description"],
+            config=config,
+            agent=mock_agent,
+        )
+
+        with patch(
+            "subagents_pydantic_ai.toolset._compile_subagent",
+            return_value=mock_compiled,
+        ):
+            toolset = create_subagent_toolset(subagents=[config], include_general_purpose=False)
+            task_tool = toolset.tools["task"]
+            wait_tool = toolset.tools["wait_tasks"]
+            ctx = MockRunContext(deps=MockDeps())
+
+            r = await task_tool.function(ctx, "slow work", "worker", "async")
+            tid = r.split("Task ID: ")[1].split("\n")[0]
+
+            worker_task = toolset.task_manager.tasks[tid]  # type: ignore[attr-defined]
+
+            # Schedule wait_tasks as its own task so we can cancel it from
+            # outside (mimicking pydantic-ai sibling-cancel of the tool call).
+            waiter = asyncio.create_task(wait_tool.function(ctx, [tid], 5.0))
+            await asyncio.sleep(0)  # let waiter start
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+            # Worker MUST still be alive and own its own lifecycle.
+            assert not worker_task.done()
+
+            # And it must finish normally — proves no cascade kill happened.
+            await asyncio.wait_for(worker_task, timeout=2.0)
+            handle = toolset.task_manager.get_handle(tid)  # type: ignore[attr-defined]
+            assert handle is not None
+            assert handle.status == TaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_wait_tasks_reports_cancelled_status(self):
+        """wait_tasks output labels CANCELLED tasks explicitly."""
+        config = SubAgentConfig(name="worker", description="Worker", instructions="Work")
+        mock_agent = FakeAgent(delay=10.0)
+        mock_compiled = CompiledSubAgent(
+            name=config["name"],
+            description=config["description"],
+            config=config,
+            agent=mock_agent,
+        )
+
+        with patch(
+            "subagents_pydantic_ai.toolset._compile_subagent",
+            return_value=mock_compiled,
+        ):
+            toolset = create_subagent_toolset(subagents=[config], include_general_purpose=False)
+            task_tool = toolset.tools["task"]
+            wait_tool = toolset.tools["wait_tasks"]
+            hard_cancel_tool = toolset.tools["hard_cancel_task"]
+            ctx = MockRunContext(deps=MockDeps())
+
+            r = await task_tool.function(ctx, "long work", "worker", "async")
+            tid = r.split("Task ID: ")[1].split("\n")[0]
+
+            await hard_cancel_tool.function(ctx, tid)
+            await asyncio.sleep(0.05)  # let cancellation settle
+
+            result = await wait_tool.function(ctx, [tid], 1.0)
+            assert "CANCELLED" in result
+            assert "1/1 finished" in result
 
     @pytest.mark.asyncio
     async def test_soft_cancel_task_success(self):

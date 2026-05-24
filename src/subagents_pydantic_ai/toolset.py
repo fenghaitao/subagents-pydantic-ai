@@ -514,22 +514,15 @@ def create_subagent_toolset(  # noqa: C901
 
         if tasks_to_await:
             aws = [t for _, t in tasks_to_await]
-            if mode == "any":
-                # asyncio.wait with FIRST_COMPLETED naturally returns on the
-                # first finish (success or exception) and never raises on
-                # timeout — both pending and timed-out cases fall through to
-                # the result collection below.
-                await asyncio.wait(
-                    aws, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-                )
-            else:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*aws, return_exceptions=True),
-                        timeout=timeout,
-                    )
-                except asyncio.TimeoutError:
-                    pass  # Report what we have so far
+            # Both modes route through ``asyncio.wait``. Unlike
+            # ``asyncio.wait_for(asyncio.gather(...))``, ``asyncio.wait`` does
+            # *not* cascade cancellation to its constituent tasks — neither on
+            # timeout nor when its caller is cancelled (e.g. pydantic-ai's
+            # ``_call_tools`` sibling-cancel hitting this tool call). Workers
+            # keep owning their lifecycle, which is what an orchestrator
+            # expects.
+            return_when = asyncio.FIRST_COMPLETED if mode == "any" else asyncio.ALL_COMPLETED
+            await asyncio.wait(aws, timeout=timeout, return_when=return_when)
 
         # Collect results
         lines: list[str] = []
