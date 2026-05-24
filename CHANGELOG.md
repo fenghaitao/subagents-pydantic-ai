@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-05-24
+
+### Added
+
+- **`wait_tasks(mode="any")` for reactive orchestration** ([#29](https://github.com/vstorm-co/subagents-pydantic-ai/issues/29), [#30](https://github.com/vstorm-co/subagents-pydantic-ai/pull/30) by [@Gby56](https://github.com/Gby56)) — new `mode: Literal["all", "any"] = "all"` parameter on `wait_tasks`. `mode="any"` returns as soon as the first task reaches a terminal state (completed/failed/cancelled), so an orchestrator can act on the first finisher instead of stalling on the slowest. Default `mode="all"` is backward-compatible. Output now includes a header (`Task results (mode=any, X/Y finished, Z still running):`) and explicitly labels `CANCELLED` tasks.
+
+### Fixed
+
+- **`wait_tasks` no longer cascades cancellation to its workers.** Previously the default (`mode="all"`) path used `asyncio.wait_for(asyncio.gather(...))`, both of which propagate cancellation to their constituent tasks. When pydantic-ai's `_call_tools` sibling-cancel hit the `wait_tasks` tool call (e.g. another tool raised during a parallel turn), or any outer cancel reached the orchestrator, the cascade silently killed every in-flight subagent — they surfaced as `TaskStatus.CANCELLED` with an empty `error` string even though the parent never requested it. Both modes now use `asyncio.wait(..., return_when=...)`, which does not cancel its awaitees on timeout or caller cancellation. Workers keep owning their own lifecycle. Diagnosed by [@Gby56](https://github.com/Gby56).
+
 ## [0.2.3] - 2026-05-17
 
 ### Added
