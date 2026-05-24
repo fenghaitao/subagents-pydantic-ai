@@ -491,6 +491,7 @@ def create_subagent_toolset(  # noqa: C901
         ctx: RunContext[SubAgentDepsProtocol],
         task_ids: list[str],
         timeout: float = 300.0,
+        mode: Literal["all", "any"] = "all",
     ) -> str:
         """Wait for multiple background tasks to complete.
 
@@ -498,6 +499,11 @@ def create_subagent_toolset(  # noqa: C901
             ctx: The run context.
             task_ids: List of task IDs to wait for.
             timeout: Maximum seconds to wait (default 300s / 5 minutes).
+            mode: ``"all"`` (default) waits for every task to finish.
+                ``"any"`` returns as soon as one task reaches a terminal
+                state (completed, failed, or cancelled), so the orchestrator
+                can react to the first finisher without stalling on the
+                slowest one.
         """
         # Collect asyncio.Task objects for the requested task_ids
         tasks_to_await: list[tuple[str, asyncio.Task[Any]]] = []
@@ -506,19 +512,28 @@ def create_subagent_toolset(  # noqa: C901
             if t is not None and not t.done():
                 tasks_to_await.append((tid, t))
 
-        # Wait for all with timeout
         if tasks_to_await:
             aws = [t for _, t in tasks_to_await]
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*aws, return_exceptions=True),
-                    timeout=timeout,
+            if mode == "any":
+                # asyncio.wait with FIRST_COMPLETED naturally returns on the
+                # first finish (success or exception) and never raises on
+                # timeout — both pending and timed-out cases fall through to
+                # the result collection below.
+                await asyncio.wait(
+                    aws, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
                 )
-            except asyncio.TimeoutError:
-                pass  # Report what we have so far
+            else:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*aws, return_exceptions=True),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    pass  # Report what we have so far
 
         # Collect results
         lines: list[str] = []
+        finished_count = 0
         for tid in task_ids:
             handle = task_manager.get_handle(tid)
             if handle is None:
@@ -526,14 +541,26 @@ def create_subagent_toolset(  # noqa: C901
                 continue
             status = handle.status
             if status == "completed":
+                finished_count += 1
                 result_preview = (handle.result or "")[:2000]
                 lines.append(f"- {tid} ({handle.subagent_name}): COMPLETED\n{result_preview}")
             elif status == "failed":
+                finished_count += 1
                 lines.append(f"- {tid} ({handle.subagent_name}): FAILED - {handle.error}")
+            elif status == "cancelled":
+                finished_count += 1
+                lines.append(f"- {tid} ({handle.subagent_name}): CANCELLED - {handle.error}")
             else:
                 lines.append(f"- {tid} ({handle.subagent_name}): {status}")
 
-        return "Task results:\n" + "\n\n".join(lines)
+        total = len(task_ids)
+        still_running = total - finished_count
+        header_parts = [f"mode={mode}", f"{finished_count}/{total} finished"]
+        if still_running > 0:
+            header_parts.append(f"{still_running} still running")
+        header = f"Task results ({', '.join(header_parts)}):"
+
+        return header + "\n" + "\n\n".join(lines)
 
     @toolset.tool(description=_descs.get("soft_cancel_task", SOFT_CANCEL_TASK_DESCRIPTION))
     async def soft_cancel_task(

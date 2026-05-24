@@ -111,11 +111,35 @@ List all currently active background tasks with their status.
 Use this to see what async tasks are running and their current state."""
 
 WAIT_TASKS_DESCRIPTION = """\
-Wait for multiple background tasks to complete before continuing.
+Wait for one or more background tasks to finish before continuing.
 
-Blocks until ALL specified tasks are done (completed, failed, or cancelled), \
-or until the timeout is reached. Use after dispatching multiple async tasks \
-when you need all results before proceeding."""
+A task is "finished" when it is completed, failed, or cancelled.
+
+## Modes
+
+- **mode="all"** (default): block until every task in `task_ids` is \
+finished, or the timeout is reached. Use when you genuinely need every \
+result together before the next step (e.g. final synthesis across all \
+subagents).
+- **mode="any"**: return as soon as ONE task finishes. Use when the \
+subagents are independent and you can start acting on each finisher \
+immediately — this avoids stalling on the slowest task. After reacting to \
+the finisher, call `wait_tasks` again on the remaining ids (or use \
+`check_task`) to handle the rest.
+
+## When to prefer `mode="any"`
+
+When you've dispatched several async tasks in parallel and any individual \
+result is independently useful (e.g. routing decisions, progressive \
+synthesis, fan-out research). Reactive orchestration is almost always \
+faster than waiting on the slowest agent.
+
+## Output
+
+The result lists every requested task with its current state and a header \
+showing `mode`, `<finished>/<total> finished`, and how many are still \
+running. Unfinished tasks remain in the background — you can keep working \
+or wait on them again later."""
 
 SOFT_CANCEL_TASK_DESCRIPTION = """\
 Request cooperative cancellation of a background task. The subagent will be \

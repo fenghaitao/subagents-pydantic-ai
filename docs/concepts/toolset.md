@@ -140,6 +140,54 @@ list_active_tasks()
 
 **Returns:** List of task IDs, subagent names, and statuses.
 
+### wait_tasks
+
+Wait for one or more background tasks to finish.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `task_ids` | `list[str]` | — | Task IDs to wait on |
+| `timeout` | `float` | `300.0` | Max seconds to wait |
+| `mode` | `"all" \| "any"` | `"all"` | When to return |
+
+A task is considered "finished" when it is completed, failed, or cancelled.
+
+#### `mode="all"` (default)
+
+Block until every task in `task_ids` is finished, or the timeout fires.
+Use when you need every result together before the next step (e.g. a
+final synthesis across all subagents).
+
+```python
+# Wait for both research subagents before writing the report
+result = wait_tasks(task_ids=["abc123", "def456"], mode="all")
+```
+
+#### `mode="any"` — reactive orchestration
+
+Return as soon as ONE task finishes. Use when the subagents are
+independent and you can act on each result as it arrives — this avoids
+stalling on the slowest task.
+
+```python
+# Dispatch 4 independent research tasks in parallel
+ids = [task(...) for _ in range(4)]
+
+remaining = list(ids)
+while remaining:
+    # Return as soon as one finishes — don't wait on the slowest
+    result = wait_tasks(task_ids=remaining, mode="any")
+    # ... react to the finished task (synthesize, dispatch follow-up, etc.)
+    remaining = [tid for tid in remaining if check_task(tid).is_running]
+```
+
+The output includes a header like
+`Task results (mode=any, 1/4 finished, 3 still running):` so the
+orchestrator can see which tasks are still in flight and decide whether
+to keep waiting or do other work first.
+
 ### soft_cancel_task
 
 Request cooperative cancellation.
