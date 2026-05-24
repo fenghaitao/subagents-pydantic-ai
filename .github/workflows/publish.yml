@@ -11,8 +11,8 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync --all-extras
       - run: uv run python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1

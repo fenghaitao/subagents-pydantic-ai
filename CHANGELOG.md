@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-05-24
+
+### Infrastructure
+
+Pure CI / dependency-bot housekeeping — no source-code changes, no behaviour change since 0.2.4. Consolidates the two open Renovate auto-PRs plus the preemptive `setup-uv` / `setup-python` major bumps (same set Renovate has been gradually surfacing across the sibling repos) into a single release so downstream consumers see one bump instead of four.
+
+- **CI: bump `actions/checkout` to `v6`** across `ci.yml` (×3), `docs.yml`, `publish.yml` ([#34](https://github.com/vstorm-co/subagents-pydantic-ai/pull/34), Renovate auto-PR — folded in here).
+- **CI: bump `docs.yml` Python to `3.14`** ([#33](https://github.com/vstorm-co/subagents-pydantic-ai/pull/33), Renovate auto-PR — folded in here).
+- **CI: bump `astral-sh/setup-uv` to `v8.1.0`** across `ci.yml` (×3) and `publish.yml`. Pinned to the specific patch because `astral-sh/setup-uv` does not maintain a rolling `v8` tag (only `v8.0.0` / `v8.1.0`; `v7` and earlier do have rolling majors).
+- **CI: bump `actions/setup-python` to `v6`** in `docs.yml` — `v6` has a rolling tag so plain `@v6` is used.
+
+The `ci.yml` test matrix is unchanged.
+
 ## [0.2.4] - 2026-05-24
 
 ### Added
