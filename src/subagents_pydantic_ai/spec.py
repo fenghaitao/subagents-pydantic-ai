@@ -37,7 +37,7 @@ from subagents_pydantic_ai.types import SubAgentConfig
 class SubAgentSpec(BaseModel):
     """Declarative subagent configuration for YAML/JSON specs.
 
-    A Pydantic model that mirrors ``SubAgentConfig`` (a TypedDict) but
+    A Pydantic model that mirrors `SubAgentConfig` (a TypedDict) but
     provides validation, defaults, and serialization support. This makes
     it suitable for loading subagent definitions from YAML or JSON files.
 
@@ -45,7 +45,7 @@ class SubAgentSpec(BaseModel):
         name: Unique identifier for the subagent.
         description: Brief description shown to the parent agent.
         instructions: System prompt for the subagent.
-        model: LLM model identifier (e.g. ``openai:gpt-4.1``).
+        model: LLM model identifier (e.g. `openai:gpt-4.1`).
             If None, the parent agent's default model is used.
         can_ask_questions: Whether the subagent can ask the parent questions.
         max_questions: Maximum number of questions per task.
@@ -72,10 +72,10 @@ class SubAgentSpec(BaseModel):
         """Convert to a SubAgentConfig TypedDict.
 
         Only includes fields that have been explicitly set (non-None values),
-        except for ``extra`` which is included when non-empty.
+        except for `extra` which is included when non-empty.
 
         Returns:
-            A SubAgentConfig dict suitable for ``create_subagent_toolset()``.
+            A SubAgentConfig dict suitable for `create_subagent_toolset()`.
         """
         config = SubAgentConfig(
             name=self.name,

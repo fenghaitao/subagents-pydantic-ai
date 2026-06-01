@@ -157,6 +157,7 @@ nav:
     - advanced/execution-modes.md
     - advanced/questions.md
     - advanced/cancellation.md
+    - advanced/retries.md
     - advanced/dynamic-agents.md
     - advanced/message-bus.md
   - Examples:
@@ -175,6 +176,7 @@ nav:
     - Capability: api/capability.md
     - Toolset: api/toolset.md
     - Types: api/types.md
+    - Prompts & Retry: api/prompts.md
     - Protocols: api/protocols.md
 
 validation:

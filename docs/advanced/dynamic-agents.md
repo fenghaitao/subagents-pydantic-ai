@@ -42,10 +42,16 @@ agent = Agent(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `registry` | `DynamicAgentRegistry` | Required | Registry for created agents |
-| `allowed_models` | `list[str]` | All | Models agents can use |
+| `allowed_models` | `list[str] \| None` | `None` (all allowed) | Models agents can use |
+| `default_model` | `str \| Model` | `"openai:gpt-4.1"` | Default model for new agents when none is given |
 | `max_agents` | `int` | `10` | Maximum dynamic agents |
-| `default_model` | `str \| None` | `None` | Default model for new agents |
+| `toolsets_factory` | `ToolsetFactory \| None` | `None` | Factory that builds toolsets for every new agent. Takes priority over `capabilities_map` when both are set |
+| `capabilities_map` | `dict[str, CapabilityFactory] \| None` | `None` | Maps capability names to factory functions, e.g. `{"filesystem": ..., "todo": ...}`. Used when `capabilities` are passed to `create_agent` |
+| `id` | `str \| None` | `None` (-> `"agent_factory"`) | Optional toolset ID |
 | `default_agent_factory` | `Callable \| None` | `None` | Factory used to build every dynamic agent |
+
+See [`create_agent_factory_toolset`][subagents_pydantic_ai.factory.create_agent_factory_toolset]
+for the full signature.
 
 ## DynamicAgentRegistry
 

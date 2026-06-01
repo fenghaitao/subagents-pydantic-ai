@@ -25,22 +25,13 @@
         - check_task
         - answer_subagent
         - list_active_tasks
+        - wait_tasks
         - soft_cancel_task
         - hard_cancel_task
 
-## get_subagent_system_prompt
-
-::: subagents_pydantic_ai.get_subagent_system_prompt
-    options:
-      show_root_heading: true
-      show_source: true
-
-## get_task_instructions_prompt
-
-::: subagents_pydantic_ai.get_task_instructions_prompt
-    options:
-      show_root_heading: true
-      show_source: true
+!!! info "Prompt builders"
+    `get_subagent_system_prompt` and `get_task_instructions_prompt` are documented
+    on the [Prompts &amp; Retry](prompts.md) page.
 
 ---
 

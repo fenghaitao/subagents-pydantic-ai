@@ -1,6 +1,6 @@
 """Subagent capability for pydantic-ai agents.
 
-Provides a ``SubAgentCapability`` that integrates the subagent toolset +
+Provides a `SubAgentCapability` that integrates the subagent toolset +
 dynamic instructions via the pydantic-ai capabilities API.
 
 Example:

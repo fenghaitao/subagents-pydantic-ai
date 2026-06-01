@@ -1,9 +1,9 @@
-"""Tests for the auto-retry layer (``subagents_pydantic_ai.retry``).
+"""Tests for the auto-retry layer (`subagents_pydantic_ai.retry`).
 
 Covers transient-error classification, backoff computation, the
-``RetryConfig`` resolution, the ``run_with_retry`` driver (both the legacy
-fast path and the ``iter()``-based resume-with-history path), and the
-``_run_async`` integration that surfaces retries on the task handle.
+`RetryConfig` resolution, the `run_with_retry` driver (both the legacy
+fast path and the `iter()`-based resume-with-history path), and the
+`_run_async` integration that surfaces retries on the task handle.
 """
 
 from __future__ import annotations
@@ -12,7 +12,12 @@ import asyncio
 from typing import Any
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import AbstractCapability, ProcessEventStream
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.run import AgentRunResult
+from pydantic_graph import End
 
 from subagents_pydantic_ai import (
     InMemoryMessageBus,
@@ -35,7 +40,7 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeResult:
-    """Stand-in for ``AgentRunResult``."""
+    """Stand-in for `AgentRunResult`."""
 
     def __init__(self, output: str, usage: Any = None) -> None:
         self.output = output
@@ -46,21 +51,27 @@ class FakeResult:
 
 
 class _ScriptedRun:
-    """Async-iterable stand-in for ``AgentRun``."""
+    """Stand-in for `AgentRun` driven the way `Agent.run` drives it.
+
+    `_drive_run` (non-streaming path) advances via `run.next(node)` so the
+    node hooks fire, exactly like `Agent.run`. We model that here instead of
+    the bare `async for` protocol: a success step pre-sets `result` (the
+    drive loop breaks before calling `next`), a failing step raises its
+    `iter_raise` exception from `next`.
+    """
 
     def __init__(self, step: dict[str, Any]) -> None:
         self._step = step
         self.result = step.get("result")
         self._raised = False
+        # Non-`End` sentinel so the drive loop body runs at least once.
+        self.next_node: Any = object()
 
-    def __aiter__(self) -> _ScriptedRun:
-        return self
-
-    async def __anext__(self) -> Any:
+    async def next(self, node: Any) -> Any:
         if "iter_raise" in self._step and not self._raised:
             self._raised = True
             raise self._step["iter_raise"]
-        raise StopAsyncIteration
+        return End(self.result)
 
     def all_messages(self) -> list[Any]:
         messages: list[Any] = self._step.get("messages", [])
@@ -83,9 +94,9 @@ class _ScriptedCM:
 class ScriptedAgent:
     """Agent fake driven by a list of per-attempt step dicts.
 
-    Each step may contain ``result`` (success), ``iter_raise`` (raise
-    while iterating, with optional ``messages``), ``aenter_raise`` (raise
-    before yielding a run), or ``run_raise`` (legacy ``run()`` path).
+    Each step may contain `result` (success), `iter_raise` (raise
+    while iterating, with optional `messages`), `aenter_raise` (raise
+    before yielding a run), or `run_raise` (legacy `run()` path).
     """
 
     def __init__(self, steps: list[dict[str, Any]]) -> None:
@@ -106,7 +117,7 @@ class ScriptedAgent:
 
 
 class FakeDeps:
-    """Minimal deps object ``_run_async`` can attach state to."""
+    """Minimal deps object `_run_async` can attach state to."""
 
 
 async def _no_sleep(_: float) -> None:
@@ -417,6 +428,45 @@ async def test_retry_pops_caller_message_history() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# run_with_retry - cooperative (soft) cancellation
+# --------------------------------------------------------------------------- #
+
+
+async def test_cancel_check_stops_run_cooperatively() -> None:
+    """A cancel_check returning True stops the drive loop with CancelledError."""
+    # result=None so the drive loop body runs and reaches the cancel check
+    # before completing.
+    agent = ScriptedAgent([{}])
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_with_retry(
+            agent,
+            "go",
+            run_kwargs={},
+            retry=RetryConfig(max_retries=2, jitter=False),
+            sleep=_no_sleep,
+            cancel_check=lambda: True,
+        )
+    # CancelledError is a BaseException, so the retry loop never retried it.
+    assert len(agent.iter_calls) == 1
+
+
+async def test_cancel_check_false_does_not_stop() -> None:
+    """A cancel_check that stays False lets the run complete normally."""
+    agent = ScriptedAgent([{"result": FakeResult("done")}])
+
+    result = await run_with_retry(
+        agent,
+        "go",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=2, jitter=False),
+        sleep=_no_sleep,
+        cancel_check=lambda: False,
+    )
+    assert result.output == "done"
+
+
+# --------------------------------------------------------------------------- #
 # _run_async integration — handle reflects retries
 # --------------------------------------------------------------------------- #
 
@@ -495,6 +545,78 @@ async def test_run_async_retries_exhausted_fails() -> None:
     assert "503" in str(handle.error)
 
 
+async def test_run_async_soft_cancel_marks_handle_cancelled() -> None:
+    """soft_cancel is consumed by the run loop and surfaces on the handle.
+
+    Regression guard for #117: the cancel event set by soft_cancel must be
+    polled by the running subagent so the task stops cooperatively and the
+    handle reflects CANCELLED.
+    """
+
+    config = SubAgentConfig(name="t", description="d", instructions="i")
+    bus = InMemoryMessageBus()
+    tm = TaskManager(message_bus=bus)
+    task_id = "task-soft"
+
+    class _BlockingRun:
+        """A run whose node loop blocks until the cancel event is set."""
+
+        def __init__(self) -> None:
+            self.result = None
+            self.next_node: Any = object()
+
+        async def next(self, node: Any) -> Any:
+            # Advance one node, then yield control so the drive loop re-enters
+            # its top-of-loop cancel_check. Returning a non-End node keeps the
+            # loop going until cancel_check observes the soft cancel.
+            await asyncio.sleep(0.005)
+            return object()
+
+        def all_messages(self) -> list[Any]:
+            return []
+
+    class _BlockingCM:
+        async def __aenter__(self) -> _BlockingRun:
+            return _BlockingRun()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    class _BlockingAgent:
+        def iter(self, prompt: Any, *, message_history: Any = None, **kwargs: Any) -> _BlockingCM:
+            return _BlockingCM()
+
+    agent = _BlockingAgent()
+
+    await _run_async(
+        agent=agent,
+        config=config,
+        description="do it",
+        deps=FakeDeps(),
+        task_id=task_id,
+        task_manager=tm,
+        message_bus=bus,
+    )
+    # Let the task reach its first node boundary / block.
+    await asyncio.sleep(0.01)
+
+    result = await tm.soft_cancel(task_id)
+    assert result is True
+
+    # Give the run loop a chance to observe the cancel and tear down.
+    for _ in range(50):
+        handle = tm.get_handle(task_id)
+        assert handle is not None
+        if handle.status == TaskStatus.CANCELLED:
+            break
+        await asyncio.sleep(0.01)
+
+    handle = tm.get_handle(task_id)
+    assert handle is not None
+    assert handle.status == TaskStatus.CANCELLED
+    assert handle.error == "Task was cancelled"
+
+
 # --------------------------------------------------------------------------- #
 # run_kwargs (e.g. usage_limits) survive every retry attempt
 # --------------------------------------------------------------------------- #
@@ -526,3 +648,140 @@ async def test_run_kwargs_forwarded_on_every_attempt() -> None:
     assert len(agent.iter_calls) == 2
     assert agent.iter_calls[0]["usage_limits"] is sentinel_limits
     assert agent.iter_calls[1]["usage_limits"] is sentinel_limits
+
+
+# --------------------------------------------------------------------------- #
+# Event streaming on the iter()-based retry path
+#
+# Regression guard: the retry path drives the run via agent.iter(). A bare
+# `async for _ in run` uses AgentRun.__anext__, which skips node hooks and
+# never streams — so a configured event_stream_handler (or a
+# wrap_run_event_stream capability) would silently never fire, dropping
+# tool-call/reasoning events that consumers stream to their platform.
+# run_with_retry must drive the run the way agent.run() does instead.
+# --------------------------------------------------------------------------- #
+
+
+async def test_event_stream_capability_fires_on_retry_path() -> None:
+    """A `ProcessEventStream` capability receives events on the retry path."""
+
+    events: list[Any] = []
+
+    async def handler(_ctx: Any, stream: Any) -> None:
+        async for event in stream:
+            events.append(event)
+
+    agent = Agent(TestModel(), capabilities=[ProcessEventStream(handler)])
+
+    result = await run_with_retry(
+        agent,
+        "hello",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=3, jitter=False),
+        sleep=_no_sleep,
+    )
+
+    # The run completed AND the capability saw streamed events — proving the
+    # iter()-driven retry path streams just like agent.run().
+    assert result.output
+    assert events, "event stream capability never fired on the retry path"
+
+
+async def test_event_stream_handler_override_fires_on_retry_path() -> None:
+    """An explicit `event_stream_handler` override drives streaming."""
+
+    events: list[Any] = []
+
+    async def handler(_ctx: Any, stream: Any) -> None:
+        async for event in stream:
+            events.append(event)
+
+    # Agent has no handler of its own — the override is the only source.
+    agent = Agent(TestModel())
+
+    result = await run_with_retry(
+        agent,
+        "hello",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=3, jitter=False),
+        sleep=_no_sleep,
+        event_stream_handler=handler,
+    )
+
+    assert result.output
+    assert events, "override event_stream_handler never fired"
+
+
+async def test_fast_path_forwards_event_stream_handler_override() -> None:
+    """`max_retries == 0` forwards an explicit handler to `agent.run()`."""
+
+    events: list[Any] = []
+
+    async def handler(_ctx: Any, stream: Any) -> None:
+        async for event in stream:
+            events.append(event)
+
+    agent = Agent(TestModel())
+
+    result = await run_with_retry(
+        agent,
+        "hello",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=0),
+        event_stream_handler=handler,
+    )
+
+    assert result.output
+    assert events, "fast path did not forward the event_stream_handler override"
+
+
+async def test_retry_path_without_streaming_consumer_completes() -> None:
+    """No handler and no streaming capability → cheap bare drive still runs."""
+
+    agent = Agent(TestModel())
+
+    result = await run_with_retry(
+        agent,
+        "hello",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=3, jitter=False),
+        sleep=_no_sleep,
+    )
+
+    assert result.output
+
+
+async def test_streaming_drive_breaks_on_wrap_run_short_circuit() -> None:
+    """A `wrap_run` short-circuit publishes the result before any node runs.
+
+    `agent.iter()` stores the short-circuit result as `run.result` before
+    yielding, so the streaming driver must detect it and stop instead of
+    stepping the (already resolved) graph.
+    """
+
+    short_circuit = AgentRunResult("short-circuited")
+
+    class _ShortCircuitRun(AbstractCapability):
+        async def wrap_run(self, ctx: Any, *, handler: Any) -> Any:
+            # Never call handler() → the run is skipped, result used directly.
+            return short_circuit
+
+    events: list[Any] = []
+
+    async def handler(_ctx: Any, stream: Any) -> None:  # pragma: no cover - never reached
+        async for event in stream:
+            events.append(event)
+
+    agent = Agent(TestModel(), capabilities=[_ShortCircuitRun()])
+
+    result = await run_with_retry(
+        agent,
+        "hello",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=2, jitter=False),
+        sleep=_no_sleep,
+        event_stream_handler=handler,
+    )
+
+    assert result is short_circuit
+    assert events == []

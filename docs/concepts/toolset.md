@@ -303,25 +303,40 @@ Only the tool names you include in the dictionary are overridden; the rest keep 
 Add context about available subagents to your agent's system prompt:
 
 ```python
-from subagents_pydantic_ai import get_subagent_system_prompt
+from subagents_pydantic_ai import SubAgentConfig, get_subagent_system_prompt
+
+configs = [
+    SubAgentConfig(
+        name="researcher",
+        description="Researches topics and gathers information",
+        instructions="You are a research assistant.",
+    ),
+    SubAgentConfig(
+        name="writer",
+        description="Writes content based on research",
+        instructions="You are a writer.",
+    ),
+]
 
 # Generate prompt listing available subagents
-prompt = get_subagent_system_prompt(deps, compiled_subagents)
+prompt = get_subagent_system_prompt(configs)
 ```
 
-This generates text like:
+The [`get_subagent_system_prompt`][subagents_pydantic_ai.prompts.get_subagent_system_prompt]
+function takes a list of [`SubAgentConfig`][subagents_pydantic_ai.types.SubAgentConfig]
+dicts (not deps) and an optional `include_dual_mode` flag. It generates text like:
 
 ```
 ## Available Subagents
 
-You can delegate tasks to these specialized subagents:
+Use the `task` tool to delegate work to these subagents:
 
 - **researcher**: Researches topics and gathers information
 - **writer**: Writes content based on research
-- **coder**: Writes and tests Python code
-
-Use the `task` tool to delegate work.
 ```
+
+Subagents configured with `can_ask_questions=False` are annotated with
+*(cannot ask clarifying questions)*.
 
 ## Next Steps
 

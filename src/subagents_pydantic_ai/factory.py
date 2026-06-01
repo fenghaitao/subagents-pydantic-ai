@@ -93,7 +93,19 @@ def create_agent_factory_toolset(
 
     toolset: FunctionToolset[Any] = FunctionToolset(id=id or "agent_factory")
 
-    @toolset.tool
+    # Tool description passed to the model. This MUST be supplied via the
+    # decorator: an `f"""..."""` as the first statement of the function body is
+    # NOT a docstring (`__doc__` stays `None`) — it would be evaluated and
+    # discarded on every call, throwing away the computed models/capabilities.
+    create_agent_description = (
+        "Create a new specialized agent at runtime.\n\n"
+        "Creates a new agent with the specified configuration. The agent "
+        "will be available for delegation via the task tool.\n\n"
+        f"{models_desc}\n{caps_desc}\n\n"
+        f"Default model when none is given: {default_model}."
+    )
+
+    @toolset.tool(description=create_agent_description)
     async def create_agent(
         ctx: RunContext[SubAgentDepsProtocol],
         name: str,
@@ -103,20 +115,18 @@ def create_agent_factory_toolset(
         capabilities: list[str] | None = None,
         can_ask_questions: bool = True,
     ) -> str:
-        f"""Create a new specialized agent at runtime.
+        """Create a new specialized agent at runtime.
 
-        Creates a new agent with the specified configuration. The agent
-        will be available for delegation via the task tool.
-
-        {models_desc}
-        {caps_desc}
+        The model-facing description (with the allowed models / capabilities /
+        default model interpolated) is supplied via the `@toolset.tool`
+        decorator above, not this docstring.
 
         Args:
             ctx: The run context.
             name: Unique name for the agent (letters, numbers, hyphens only).
             description: Brief description of what the agent does.
             instructions: System prompt / instructions for the agent.
-            model: Model to use (optional, defaults to {default_model}).
+            model: Model to use (optional, defaults to the factory default).
             capabilities: List of capability names to enable (e.g., ["filesystem", "todo"]).
             can_ask_questions: Whether agent can ask parent questions.
 
@@ -152,6 +162,19 @@ def create_agent_factory_toolset(
             model=actual_model,
             can_ask_questions=can_ask_questions,
         )
+
+        # A custom default_agent_factory owns the whole agent build and only
+        # receives `config`, so any toolsets/capabilities collected here
+        # cannot be injected. Rather than silently dropping them while the
+        # success message still reports them as enabled, reject the request so
+        # the caller knows capabilities are unsupported with a custom factory.
+        if default_agent_factory is not None and capabilities:
+            return (
+                "Error: capabilities are not supported when a custom "
+                "default_agent_factory is configured. The factory builds the "
+                "agent itself; create the agent without capabilities or "
+                "configure the factory to attach the required toolsets."
+            )
 
         # Collect toolsets
         agent_toolsets: list[Any] = []

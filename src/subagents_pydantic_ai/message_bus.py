@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from subagents_pydantic_ai.types import AgentMessage, MessageType
+from subagents_pydantic_ai.types import AgentMessage, MessageType, TaskStatus
 
 
 @dataclass
@@ -338,7 +338,7 @@ class TaskManager:
         self._cancel_events[task_id] = asyncio.Event()
 
         # Update handle when task starts
-        handle.status = "running"
+        handle.status = TaskStatus.RUNNING
         handle.started_at = datetime.now()
 
         return task
@@ -410,15 +410,20 @@ class TaskManager:
 
         self._cancel_events[task_id].set()
 
-        # Send cancel request message
+        # Send cancel request message. Only relevant when a handle exists for
+        # the task (created through create_task); the receiver is keyed off the
+        # task_id, not the handle.
         if task_id in self.handles:
-            handle = self.handles[task_id]
             try:
                 await self.message_bus.send(
                     AgentMessage(
                         type=MessageType.CANCEL_REQUEST,
                         sender="task_manager",
-                        receiver=handle.subagent_name,
+                        # The running subagent registers on the bus as
+                        # `subagent-{task_id}` (see toolset.py), not under its
+                        # subagent_name - sending to the latter raised a swallowed
+                        # KeyError so the cancel request never arrived.
+                        receiver=f"subagent-{task_id}",
                         payload={"reason": "soft_cancel"},
                         task_id=task_id,
                     )
@@ -446,12 +451,18 @@ class TaskManager:
         task = self.tasks[task_id]
         if not task.done():
             task.cancel()
-
-        # Update handle
-        if task_id in self.handles:
-            handle = self.handles[task_id]
-            handle.status = "cancelled"
-            handle.completed_at = datetime.now()
+            # Only mark the handle cancelled when the task was actually still
+            # running. If it already finished, its run_task `finally` has set
+            # the real outcome (COMPLETED/FAILED and `completed_at`); we must
+            # not clobber that with a spurious `cancelled` and lose the real
+            # result. When a run_task wrapper is present its
+            # `except asyncio.CancelledError` branch will set the final status
+            # once the CancelledError is delivered; setting CANCELLED here keeps
+            # the handle consistent for the bare-task case and is idempotent.
+            if task_id in self.handles:
+                handle = self.handles[task_id]
+                handle.status = TaskStatus.CANCELLED
+                handle.completed_at = datetime.now()
 
         return True
 

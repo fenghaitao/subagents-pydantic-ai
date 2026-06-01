@@ -4,7 +4,7 @@ Subagents are specialized agents that handle specific types of tasks. Each subag
 
 ## SubAgentConfig
 
-The `SubAgentConfig` TypedDict defines a subagent:
+The [`SubAgentConfig`][subagents_pydantic_ai.types.SubAgentConfig] TypedDict defines a subagent:
 
 ```python
 from subagents_pydantic_ai import SubAgentConfig
@@ -29,13 +29,23 @@ subagent = SubAgentConfig(
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `model` | `str` | Parent's model | LLM model to use |
-| `can_ask_questions` | `bool` | `False` | Enable `ask_parent` tool |
-| `max_questions` | `int` | `3` | Max questions per task |
+| `can_ask_questions` | `bool` | `True` | Enable `ask_parent` tool |
+| `max_questions` | `int` | `None` (unlimited) | Max questions per task |
 | `preferred_mode` | `str` | `"auto"` | `"sync"`, `"async"`, or `"auto"` |
 | `typical_complexity` | `str` | `"moderate"` | `"simple"`, `"moderate"`, or `"complex"` |
 | `typically_needs_context` | `bool` | `False` | Hint for auto-mode selection |
 | `toolsets` | `list` | `[]` | Additional toolsets for the subagent |
 | `agent_kwargs` | `dict` | `{}` | Extra kwargs for Agent constructor |
+| `context_files` | `list[str]` | `[]` | Context file paths injected into the system prompt (with pydantic-deep) |
+| `extra` | `dict` | `{}` | Extensibility dict for consumer libraries (not read by this library) |
+| `max_retries` | `int` | `3` | Extra retries on transient failures (`0` disables) |
+| `retry_initial_delay` | `float` | `1.0` | Seconds before the first retry |
+| `retry_max_delay` | `float` | `30.0` | Cap on the backoff delay |
+| `retry_backoff_multiplier` | `float` | `2.0` | Delay growth factor per attempt |
+| `retry_jitter` | `bool` | `True` | Randomise the backoff delay |
+| `retry_on` | `Callable` | built-in | Custom transient-error predicate |
+
+See [Auto-Retry](../advanced/retries.md) for the retry fields in detail.
 
 ## Defining Subagents
 

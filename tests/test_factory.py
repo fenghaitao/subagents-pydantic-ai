@@ -499,3 +499,38 @@ class TestCreateAgentFactoryToolset:
         # The factory receives a SubAgentConfig
         call_arg = factory.call_args[0][0]
         assert call_arg["name"] == "custom-agent"
+
+    async def test_create_agent_capabilities_rejected_with_factory(
+        self, registry: DynamicAgentRegistry
+    ):
+        """capabilities are rejected when a custom default_agent_factory is set.
+
+        The factory builds the whole agent and only receives `config`, so
+        toolsets built from capabilities cannot be injected. Rather than
+        silently dropping them, create_agent returns an error and never calls
+        the factory.
+        """
+        factory = MagicMock()
+
+        toolset = create_agent_factory_toolset(
+            registry=registry,
+            default_agent_factory=factory,
+            capabilities_map={
+                "filesystem": lambda deps: [MagicMock()],
+            },
+        )
+        create_tool = toolset.tools["create_agent"]
+        ctx = MockRunContext(deps=MockDeps())
+
+        result = await create_tool.function(
+            ctx,
+            name="custom-agent",
+            description="Custom",
+            instructions="Do things",
+            capabilities=["filesystem"],
+        )
+
+        assert "Error" in result
+        assert "not supported" in result
+        factory.assert_not_called()
+        assert not registry.exists("custom-agent")

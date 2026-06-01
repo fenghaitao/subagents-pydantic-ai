@@ -136,10 +136,10 @@ Example:
 
 
 AskUserCallback = Callable[[str], Awaitable[str]]
-"""Callback invoked when a subagent calls ``ask_parent`` in sync mode.
+"""Callback invoked when a subagent calls `ask_parent` in sync mode.
 
 Receives the subagent's question and must return the answer. Typically wired
-to a human-in-the-loop UI, a CLI ``input()`` prompt, or a pre-canned answerer
+to a human-in-the-loop UI, a CLI `input()` prompt, or a pre-canned answerer
 for tests.
 
 Example:
@@ -168,12 +168,12 @@ class SubAgentConfig(TypedDict, total=False):
 
     Optional fields:
         model: LLM model to use (defaults to parent's default)
-        agent: Pre-built agent instance. When provided, ``_compile_subagent``
-            uses this instead of creating a new ``Agent``. Useful for passing
+        agent: Pre-built agent instance. When provided, `_compile_subagent`
+            uses this instead of creating a new `Agent`. Useful for passing
             agents created by frameworks like pydantic-deep.
         agent_factory: Callable that receives the SubAgentConfig and returns
-            an agent instance. Called by ``_compile_subagent`` if ``agent``
-            is not provided. Signature: ``(config: SubAgentConfig) -> Agent``.
+            an agent instance. Called by `_compile_subagent` if `agent`
+            is not provided. Signature: `(config: SubAgentConfig) -> Agent`.
         can_ask_questions: Whether subagent can ask parent questions
         max_questions: Maximum questions per task
         preferred_mode: Default execution mode preference for this subagent
@@ -188,21 +188,21 @@ class SubAgentConfig(TypedDict, total=False):
         extra: Generic extensibility dict for consumer libraries.
             subagents-pydantic-ai does not read this field — it's carried
             through for consumers like pydantic-deep to use freely.
-            Example keys: ``memory``, ``team``, ``cost_budget``.
+            Example keys: `memory`, `team`, `cost_budget`.
         max_retries: Number of extra attempts after a transient failure
-            (flaky gateway/network). Defaults to ``3`` — subagents are
+            (flaky gateway/network). Defaults to `3` — subagents are
             resilient out of the box; retries resume with the full
-            message history so partial progress is not lost. Set ``0``
-            to disable retrying (legacy ``agent.run()`` opt-out path).
+            message history so partial progress is not lost. Set `0`
+            to disable retrying (legacy `agent.run()` opt-out path).
         retry_initial_delay: Seconds before the first retry (default 1.0).
         retry_max_delay: Cap for the backoff delay (default 30.0).
         retry_backoff_multiplier: Delay growth factor per attempt
             (default 2.0).
-        retry_jitter: Randomise the backoff delay in ``[0, delay]`` to
-            avoid a thundering herd (default ``True``).
-        retry_on: Custom predicate ``(exc) -> bool`` deciding whether an
+        retry_jitter: Randomise the backoff delay in `[0, delay]` to
+            avoid a thundering herd (default `True`).
+        retry_on: Custom predicate `(exc) -> bool` deciding whether an
             exception is transient. Defaults to the built-in classifier
-            (``ModelHTTPError`` 5xx/429/... and non-HTTP ``ModelAPIError``).
+            (`ModelHTTPError` 5xx/429/... and non-HTTP `ModelAPIError`).
 
     Example with builtin_tools:
         ```python
@@ -252,7 +252,7 @@ UsageLimitsFactory = Callable[[RunContext[Any], SubAgentConfig], "UsageLimits | 
 """Factory function that resolves usage limits for a delegated subagent task.
 
 Called once per delegated task with the parent run context and selected
-subagent config. Return ``None`` to run that task without explicit limits.
+subagent config. Return `None` to run that task without explicit limits.
 """
 
 
@@ -319,7 +319,7 @@ class TaskHandle:
     error: str | None = None
     pending_question: str | None = None
     usage: Any = None
-    """Token usage from the subagent run (``RunUsage`` from pydantic-ai)."""
+    """Token usage from the subagent run (`RunUsage` from pydantic-ai)."""
     retry_count: int = 0
     """Number of transient-failure retries performed for this task."""
 

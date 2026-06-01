@@ -49,9 +49,9 @@ from subagents_pydantic_ai.types import (
 def _serialize_output(output: Any) -> str:
     """Serialize subagent output preserving structure for Pydantic models.
 
-    For Pydantic models (BaseModel), returns JSON via ``model_dump_json()``.
-    For dataclasses with ``__dataclass_fields__``, returns JSON via ``json.dumps``.
-    For everything else, returns ``str(output)``.
+    For Pydantic models (BaseModel), returns JSON via `model_dump_json()`.
+    For dataclasses with `__dataclass_fields__`, returns JSON via `json.dumps`.
+    For everything else, returns `str(output)`.
     """
     if hasattr(output, "model_dump_json"):
         return output.model_dump_json()  # type: ignore[no-any-return]
@@ -80,9 +80,9 @@ def _compile_subagent(
     """Compile a subagent configuration into a ready-to-use agent.
 
     Agent resolution priority:
-    1. ``config["agent"]`` — pre-built agent instance, used as-is
-    2. ``config["agent_factory"]`` — callable(config) -> agent
-    3. Default — creates ``pydantic_ai.Agent`` from config fields
+    1. `config["agent"]` — pre-built agent instance, used as-is
+    2. `config["agent_factory"]` — callable(config) -> agent
+    3. Default — creates `pydantic_ai.Agent` from config fields
 
     Args:
         config: The subagent configuration.
@@ -224,6 +224,7 @@ def create_subagent_toolset(  # noqa: C901
     - `check_task`: Check status of an async task
     - `answer_subagent`: Answer a question from a subagent
     - `list_active_tasks`: List all running background tasks
+    - `wait_tasks`: Wait for one or more background tasks to finish
     - `soft_cancel_task`: Request cooperative cancellation
     - `hard_cancel_task`: Immediately cancel a task
 
@@ -242,15 +243,15 @@ def create_subagent_toolset(  # noqa: C901
             Keys are tool names (task, check_task, answer_subagent,
             list_active_tasks, wait_tasks, soft_cancel_task, hard_cancel_task).
             When provided, the custom description replaces the built-in default.
-        ask_user: Optional callback invoked when a subagent calls ``ask_parent``
+        ask_user: Optional callback invoked when a subagent calls `ask_parent`
             in sync mode. Receives the question and must return the answer.
-            Required for sync-mode subagents with ``can_ask_questions=True``;
+            Required for sync-mode subagents with `can_ask_questions=True`;
             without it the subagent gets a configuration error. In async mode
-            the parent answers via ``answer_subagent`` instead.
+            the parent answers via `answer_subagent` instead.
         usage_limits: Optional pydantic-ai usage limits for delegated subagent
-            runs. Pass a ``UsageLimits`` instance to reuse the same limits for
+            runs. Pass a `UsageLimits` instance to reuse the same limits for
             every task, or a factory called once per task with the parent run
-            context and selected subagent config. A factory may return ``None``
+            context and selected subagent config. A factory may return `None`
             to run that task without explicit limits. Limits are honoured on
             every retry attempt as well.
 
@@ -499,8 +500,8 @@ def create_subagent_toolset(  # noqa: C901
             ctx: The run context.
             task_ids: List of task IDs to wait for.
             timeout: Maximum seconds to wait (default 300s / 5 minutes).
-            mode: ``"all"`` (default) waits for every task to finish.
-                ``"any"`` returns as soon as one task reaches a terminal
+            mode: `"all"` (default) waits for every task to finish.
+                `"any"` returns as soon as one task reaches a terminal
                 state (completed, failed, or cancelled), so the orchestrator
                 can react to the first finisher without stalling on the
                 slowest one.
@@ -514,11 +515,11 @@ def create_subagent_toolset(  # noqa: C901
 
         if tasks_to_await:
             aws = [t for _, t in tasks_to_await]
-            # Both modes route through ``asyncio.wait``. Unlike
-            # ``asyncio.wait_for(asyncio.gather(...))``, ``asyncio.wait`` does
+            # Both modes route through `asyncio.wait`. Unlike
+            # `asyncio.wait_for(asyncio.gather(...))`, `asyncio.wait` does
             # *not* cascade cancellation to its constituent tasks — neither on
             # timeout nor when its caller is cancelled (e.g. pydantic-ai's
-            # ``_call_tools`` sibling-cancel hitting this tool call). Workers
+            # `_call_tools` sibling-cancel hitting this tool call). Workers
             # keep owning their lifecycle, which is what an orchestrator
             # expects.
             return_when = asyncio.FIRST_COMPLETED if mode == "any" else asyncio.ALL_COMPLETED
@@ -593,7 +594,7 @@ def create_subagent_toolset(  # noqa: C901
     def get_total_usage() -> dict[str, int]:
         """Get aggregate token usage across all completed subagent tasks.
 
-        Returns dict with ``input_tokens``, ``output_tokens``, ``total_tokens``, ``requests``.
+        Returns dict with `input_tokens`, `output_tokens`, `total_tokens`, `requests`.
         """
         totals: dict[str, int] = {
             "input_tokens": 0,
@@ -635,7 +636,7 @@ async def _run_sync(
         extra_toolsets: Additional toolsets to pass to agent.run().
         ask_user: Optional callback for `ask_parent` in sync mode. When
             provided, it is attached to the cloned subagent deps via
-            ``_subagent_state["ask_callback"]`` so `ask_parent` resolves to
+            `_subagent_state["ask_callback"]` so `ask_parent` resolves to
             it. The parent agent cannot answer directly in sync mode because
             its run loop is blocked here.
         usage_limits: Optional pydantic-ai usage limits forwarded to the
@@ -750,6 +751,14 @@ async def _run_async(
             handle.retry_count = attempt
             handle.error = f"Transient error (retry {attempt}): {exc}"
 
+        def _cancel_requested() -> bool:
+            # Cooperative (soft) cancellation: TaskManager.soft_cancel sets this
+            # event, and run_with_retry polls it between graph nodes so the
+            # subagent stops at a clean boundary. Raised CancelledError is
+            # handled by the `except asyncio.CancelledError` branch below.
+            cancel_event = task_manager.get_cancel_event(task_id)
+            return cancel_event is not None and cancel_event.is_set()
+
         try:
             result = await run_with_retry(
                 agent,
@@ -757,6 +766,7 @@ async def _run_async(
                 run_kwargs=run_kwargs,
                 retry=RetryConfig.from_config(config),
                 on_retry=_on_retry,
+                cancel_check=_cancel_requested,
             )
             handle.result = _serialize_output(result.output)
             handle.error = None
