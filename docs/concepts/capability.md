@@ -47,7 +47,34 @@ SubAgentCapability(
     descriptions={                      # Override tool descriptions
         "task": "Delegate work to a specialist",
     },
+    usage_limits=UsageLimits(           # Static limits, or a factory (see below)
+        request_limit=10,
+    ),
 )
+```
+
+### Usage limits
+
+`usage_limits` caps token/request usage for delegated subagent runs. Pass a
+`UsageLimits` (from pydantic-ai) instance to reuse the same limits
+for every task, or a
+[`UsageLimitsFactory`][subagents_pydantic_ai.types.UsageLimitsFactory] —
+`(ctx, config) -> UsageLimits | None` — called once per delegated task with the
+parent run context and the selected subagent config. A factory may return `None`
+to run that task without explicit limits. Limits are enforced on every retry
+attempt as well.
+
+```python
+from pydantic_ai import RunContext, UsageLimits
+from subagents_pydantic_ai import SubAgentCapability, SubAgentConfig
+
+def limits_for(ctx: RunContext, config: SubAgentConfig) -> UsageLimits | None:
+    # Give the researcher a larger budget than other subagents.
+    if config["name"] == "researcher":
+        return UsageLimits(request_limit=20)
+    return UsageLimits(request_limit=5)
+
+cap = SubAgentCapability(subagents=[...], usage_limits=limits_for)
 ```
 
 ## How It Works
@@ -55,11 +82,23 @@ SubAgentCapability(
 When you pass `SubAgentCapability` to an agent, pydantic-ai calls:
 
 1. **`get_toolset()`** — returns the `FunctionToolset` containing delegation tools
-   (`task`, `check_task`, `answer_subagent`, `list_active_tasks`,
+   (`task`, `check_task`, `answer_subagent`, `list_active_tasks`, `wait_tasks`,
    `soft_cancel_task`, `hard_cancel_task`)
 
 2. **`get_instructions()`** — returns a callable that generates the system prompt
-   listing available subagents with their descriptions
+   listing available subagents with their descriptions (via
+   [`get_subagent_system_prompt`][subagents_pydantic_ai.prompts.get_subagent_system_prompt])
+
+!!! warning "Sync-mode questions are not supported via the capability"
+    `SubAgentCapability` builds its toolset without an `ask_user` callback (see
+    [`capability.py`][subagents_pydantic_ai.capability.SubAgentCapability]). A
+    subagent that calls `ask_parent` in **sync** mode therefore gets a
+    configuration error. To support sync-mode questions
+    (`can_ask_questions=True`), build the toolset directly with
+    [`create_subagent_toolset`][subagents_pydantic_ai.toolset.create_subagent_toolset]
+    and pass `ask_user=...`. In **async** mode the parent answers via
+    `answer_subagent`, which works with the capability. See
+    [Parent-Child Questions](../advanced/questions.md).
 
 ## Observability
 

@@ -11,7 +11,18 @@ The main entry point for creating subagent delegation capabilities.
 - [`create_subagent_toolset()`](toolset.md#create_subagent_toolset) - Create a subagent toolset
 - [`create_agent_factory_toolset()`](toolset.md#create_agent_factory_toolset) - Create dynamic agent factory
 - [`SubAgentToolset`](toolset.md#subagenttoolset) - The toolset class
-- [`get_subagent_system_prompt()`](toolset.md#get_subagent_system_prompt) - Generate system prompt
+- [`get_subagent_system_prompt()`](prompts.md#get_subagent_system_prompt) - Generate system prompt
+
+### Prompts &amp; Retry
+
+Prompt builders, default tool descriptions, and auto-retry helpers.
+
+- [`get_subagent_system_prompt()`](prompts.md#get_subagent_system_prompt) - Generate system prompt
+- [`get_task_instructions_prompt()`](prompts.md#get_task_instructions_prompt) - Generate task instructions
+- [`RetryConfig`](prompts.md#retryconfig) - Resolved retry policy
+- [`run_with_retry()`](prompts.md#run_with_retry) - Retry driver
+- [`is_transient_error()`](prompts.md#is_transient_error) - Transient-error classifier
+- [`compute_backoff_delay()`](prompts.md#compute_backoff_delay) - Backoff computation
 
 ### Types
 

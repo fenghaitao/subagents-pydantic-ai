@@ -131,6 +131,26 @@ toolset = create_subagent_toolset(
 )
 ```
 
+### How the depth budget is spent
+
+`max_nesting_depth` is a *budget* that decrements by one each time a task is
+delegated. When the `task` tool runs, it calls
+`parent_deps.clone_for_subagent(max_nesting_depth - 1)` and passes the decremented
+budget down as the new `max_depth`. Once the budget reaches `0`, the
+[`clone_for_subagent`][subagents_pydantic_ai.protocols.SubAgentDepsProtocol.clone_for_subagent]
+implementation is expected to hand the subagent an empty `subagents` dict, so it
+can no longer delegate. This is why the `Deps` examples above use
+`subagents={} if max_depth <= 0 else self.subagents.copy()`.
+
+!!! note "Deps must implement `SubAgentDepsProtocol`"
+    Any deps passed to a subagent-enabled agent must satisfy
+    [`SubAgentDepsProtocol`][subagents_pydantic_ai.protocols.SubAgentDepsProtocol]:
+    a `subagents: dict[str, Any]` attribute plus a
+    `clone_for_subagent(max_depth: int = 0)` method that returns a fresh deps
+    instance for the child. The clone is where you decide what the subagent
+    inherits (shared backend / read-only state) and what is isolated (its own
+    `subagents` budget, task-specific scratch state).
+
 ## Hierarchical Team Structure
 
 ```python

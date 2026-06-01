@@ -6,15 +6,23 @@ exponential backoff. Each retry resumes with the full accumulated message
 history, so partial progress (model turns, tool calls) is not lost.
 
 The retry path deliberately uses :meth:`Agent.iter` rather than
-``capture_run_messages()`` to recover the failed run's messages, because
-nested ``capture_run_messages`` contexts do not work
+`capture_run_messages()` to recover the failed run's messages, because
+nested `capture_run_messages` contexts do not work
 (https://github.com/pydantic/pydantic-ai/issues/1568) and subagents
-always run nested inside a parent agent's run. ``Agent.iter`` exposes the
+always run nested inside a parent agent's run. `Agent.iter` exposes the
 accumulated history directly, sidestepping that limitation entirely.
 
-When retrying is disabled (``max_retries == 0``, the default), the legacy
-``agent.run()`` call path is used unchanged, so behaviour only differs
-when retrying is explicitly opted in.
+Driving the run is more than `async for _ in run`: a bare loop uses
+`AgentRun.__anext__`, which skips capability node hooks and never streams
+the model response, so the configured `event_stream_handler` (and any
+`wrap_run_event_stream` capability, e.g. a UI event stream) never fires —
+tool-call and reasoning events would silently be lost. :func:`run_with_retry`
+therefore drives the run exactly the way :meth:`Agent.run` does, streaming
+each model-request/tool node so the handler receives every event.
+
+When retrying is disabled (`max_retries == 0`) the legacy `agent.run()`
+call path is used unchanged (it already honours the handler), so behaviour
+only differs when retrying is opted in.
 """
 
 from __future__ import annotations
@@ -25,7 +33,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic_ai import _agent_graph
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_graph import End
 
 from subagents_pydantic_ai.types import SubAgentConfig
 
@@ -38,23 +48,23 @@ RetryPredicate = Callable[[BaseException], bool]
 """Predicate deciding whether an exception is a transient, retryable error."""
 
 OnRetryCallback = Callable[[int, BaseException, float], "Awaitable[None] | None"]
-"""Callback invoked before each retry sleep with ``(attempt, exc, delay)``."""
+"""Callback invoked before each retry sleep with `(attempt, exc, delay)`."""
 
 
 def is_transient_error(exc: BaseException) -> bool:
-    """Return ``True`` if *exc* looks like a transient networking failure.
+    """Return `True` if *exc* looks like a transient networking failure.
 
     Treated as transient (worth retrying):
 
-    - ``ModelHTTPError`` with a 408/409/425/429/5xx status code — gateway
+    - `ModelHTTPError` with a 408/409/425/429/5xx status code — gateway
       hiccups, rate limits or upstream overload, typical with proxies
       such as LiteLLM.
-    - ``ModelAPIError`` that is *not* an HTTP error — connection resets,
+    - `ModelAPIError` that is *not* an HTTP error — connection resets,
       read timeouts and other transport-level problems surfaced by the
       model client.
 
-    Everything else (auth/4xx, ``UnexpectedModelBehavior``,
-    ``UsageLimitExceeded``, ``UserError``, validation errors, task
+    Everything else (auth/4xx, `UnexpectedModelBehavior`,
+    `UsageLimitExceeded`, `UserError`, validation errors, task
     cancellation, ...) is treated as non-transient and is not retried.
     """
     if isinstance(exc, ModelHTTPError):
@@ -70,18 +80,18 @@ class RetryConfig:
 
     Attributes:
         max_retries: Number of *additional* attempts after the first
-            failure. Defaults to ``3`` so subagents are resilient to
-            flaky model gateways/networks out of the box. Set ``0`` to
-            disable retrying entirely (the legacy ``agent.run()``
+            failure. Defaults to `3` so subagents are resilient to
+            flaky model gateways/networks out of the box. Set `0` to
+            disable retrying entirely (the legacy `agent.run()`
             opt-out path).
         initial_delay: Seconds to wait before the first retry.
         max_delay: Upper bound for the backoff delay, in seconds.
         backoff_multiplier: The delay is multiplied by this each attempt.
-        jitter: When ``True``, the delay is randomised in
-            ``[0, computed_delay]`` (full jitter) to avoid a thundering
+        jitter: When `True`, the delay is randomised in
+            `[0, computed_delay]` (full jitter) to avoid a thundering
             herd across many concurrent subagents.
         retry_on: Predicate deciding whether an exception is transient.
-            ``None`` uses :func:`is_transient_error`.
+            `None` uses :func:`is_transient_error`.
     """
 
     max_retries: int = 3
@@ -96,7 +106,7 @@ class RetryConfig:
         """Build a :class:`RetryConfig` from a :class:`SubAgentConfig`.
 
         Missing keys fall back to the dataclass defaults, so a config
-        without any ``retry_*`` keys yields the default policy (3
+        without any `retry_*` keys yields the default policy (3
         retries with exponential backoff).
         """
         return cls(
@@ -121,9 +131,9 @@ def compute_backoff_delay(
 ) -> float:
     """Compute the delay (seconds) before retry *attempt* (1-based).
 
-    Exponential backoff (``initial_delay * multiplier ** (attempt - 1)``)
-    capped at ``cfg.max_delay``. With ``cfg.jitter`` the result is
-    randomised in ``[0, delay]`` (full jitter). ``rng`` is injectable for
+    Exponential backoff (`initial_delay * multiplier ** (attempt - 1)`)
+    capped at `cfg.max_delay`. With `cfg.jitter` the result is
+    randomised in `[0, delay]` (full jitter). `rng` is injectable for
     deterministic tests.
     """
     base = cfg.initial_delay * (cfg.backoff_multiplier ** (attempt - 1))
@@ -131,6 +141,80 @@ def compute_backoff_delay(
     if cfg.jitter:
         delay = rng(0.0, delay)
     return delay
+
+
+def _wants_event_stream(run: Any) -> bool:
+    """Return `True` when a capability needs the run streamed.
+
+    Mirrors the `agent_run.ctx.deps.root_capability.has_wrap_run_event_stream`
+    check in :meth:`Agent.run`: a capability such as a UI event stream overrides
+    `wrap_run_event_stream` and must see events even without an explicit
+    `event_stream_handler`. Defensive against fakes and older pydantic-ai
+    builds that lack the capability surface (treated as "no streaming").
+    """
+    try:
+        return bool(run.ctx.deps.root_capability.has_wrap_run_event_stream)
+    except AttributeError:
+        return False
+
+
+async def _drive_run(
+    agent: Any,
+    run: Any,
+    event_stream_handler: Any,
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
+    """Advance *run* to completion, firing the same hooks as :meth:`Agent.run`.
+
+    A bare `async for _ in run` uses `AgentRun.__anext__`, which skips the
+    node hooks (`before_node_run` / `after_node_run` / `wrap_node_run` /
+    `on_node_run_error`). :meth:`Agent.run` always drives via
+    `AgentRun.next` (or the streaming step) so those hooks fire. We mirror it
+    exactly: when a streaming consumer is present we replicate the streaming
+    step (forwarding events through `wrap_run_event_stream`); otherwise we
+    advance via `run.next(node)` — same node hooks, no streaming overhead.
+
+    `cancel_check` enables cooperative (soft) cancellation: it is polled
+    between graph nodes and, when it returns `True`, the loop stops by
+    raising :class:`asyncio.CancelledError`. The run is left at a clean node
+    boundary, so partial progress (completed model turns / tool calls) is
+    preserved on the accumulated history. Because `CancelledError` is a
+    `BaseException` it is not caught by the retry loop and propagates to the
+    caller's cancellation handling unchanged.
+    """
+
+    _stream_step: Any = None
+    if event_stream_handler is not None or _wants_event_stream(run):
+
+        async def _stream_and_advance(node: Any) -> Any:
+            if agent.is_model_request_node(node) or agent.is_call_tools_node(node):
+                async with node.stream(run.ctx) as stream:
+                    run_ctx = _agent_graph.build_run_context(run.ctx)
+                    wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                        run_ctx, stream=stream
+                    )
+                    if event_stream_handler is not None:
+                        await event_stream_handler(run_ctx, wrapped)
+                    else:
+                        async for _ in wrapped:
+                            pass
+            return await run._advance_graph(node)
+
+        _stream_step = _stream_and_advance
+
+    node = run.next_node
+    while not isinstance(node, End):
+        # Cooperative cancellation: stop at a clean node boundary when a soft
+        # cancel has been requested, before advancing into the next node.
+        if cancel_check is not None and cancel_check():
+            raise asyncio.CancelledError("Task soft-cancelled")
+        # A capability's wrap_run short-circuit can publish the result early.
+        if run.result is not None:
+            break
+        if _stream_step is not None:
+            node = await run._run_node_with_hooks(node, _stream_step)
+        else:
+            node = await run.next(node)
 
 
 async def run_with_retry(
@@ -141,40 +225,61 @@ async def run_with_retry(
     retry: RetryConfig,
     on_retry: OnRetryCallback | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    event_stream_handler: Any | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Any:
     """Run *agent* with auto-retry on transient errors.
 
-    When ``retry.max_retries <= 0`` this is exactly ``agent.run(...)`` —
+    When `retry.max_retries <= 0` this is exactly `agent.run(...)` —
     the legacy path, unchanged. Otherwise the agent is driven via
-    ``agent.iter()`` so that, on a transient failure, the accumulated
+    `agent.iter()` so that, on a transient failure, the accumulated
     message history from the failed attempt is replayed via
-    ``message_history`` on the next attempt and the subagent resumes
+    `message_history` on the next attempt and the subagent resumes
     instead of restarting from scratch.
 
     Args:
-        agent: The pydantic-ai ``Agent`` to run.
+        agent: The pydantic-ai `Agent` to run.
         user_prompt: Initial prompt. After a retry that captured history
-            it is set to ``None`` because the prompt is already replayed
-            inside ``message_history``.
-        run_kwargs: Extra kwargs forwarded to ``agent.run``/``agent.iter``
-            (``deps``, ``toolsets``, ...). A caller-supplied
-            ``message_history`` is honoured as the starting history.
+            it is set to `None` because the prompt is already replayed
+            inside `message_history`.
+        run_kwargs: Extra kwargs forwarded to `agent.run`/`agent.iter`
+            (`deps`, `toolsets`, ...). A caller-supplied
+            `message_history` is honoured as the starting history.
         retry: The resolved retry policy.
         on_retry: Optional callback invoked before each retry sleep with
-            ``(attempt, exc, delay)``. May be sync or async.
+            `(attempt, exc, delay)`. May be sync or async.
         sleep: Async sleep function, injectable for tests.
+        event_stream_handler: Optional override for the agent's configured
+            `event_stream_handler`. When `None` the agent's own handler
+            (`agent.event_stream_handler`) is used, so streaming to a
+            platform (e.g. tool-call/reasoning events to Kafka) keeps working
+            across retries — matching `agent.run()` semantics.
+        cancel_check: Optional callable polled between graph nodes for
+            cooperative (soft) cancellation. When it returns `True` the run
+            stops at the next node boundary by raising
+            `asyncio.CancelledError`. Only honoured on the retry-driven path
+            (`max_retries > 0`); the legacy `agent.run()` fast path
+            (`max_retries <= 0`) does not expose node boundaries, so soft
+            cancel is best-effort there.
 
     Returns:
-        The ``AgentRunResult`` of the first successful attempt.
+        The `AgentRunResult` of the first successful attempt.
 
     Raises:
-        The last exception when retries are exhausted or the error is not
-        transient. ``asyncio.CancelledError`` is a ``BaseException`` and
-        is never caught here, so cooperative/hard task cancellation
-        propagates unchanged.
+        Exception: The last exception when retries are exhausted or the error
+            is not transient. `asyncio.CancelledError` is a `BaseException`
+            and is never caught here, so cooperative/hard task cancellation
+            propagates unchanged.
     """
+    # An explicit handler overrides the agent's; otherwise inherit the agent's
+    # own, exactly as agent.run() does (event_stream_handler or self.…).
+    handler = event_stream_handler or getattr(agent, "event_stream_handler", None)
+
     if retry.max_retries <= 0:
-        # Fast path: preserve exact legacy behaviour (no iter, no capture).
+        # Fast path: agent.run() already drives streaming and honours the
+        # agent's handler. Only forward an explicit override.
+        if event_stream_handler is not None:
+            run_kwargs = {**run_kwargs, "event_stream_handler": event_stream_handler}
         return await agent.run(user_prompt, **run_kwargs)
 
     message_history = run_kwargs.pop("message_history", None)
@@ -184,15 +289,14 @@ async def run_with_retry(
         run = None
         try:
             async with agent.iter(prompt, message_history=message_history, **run_kwargs) as run:
-                async for _ in run:
-                    pass
+                await _drive_run(agent, run, handler, cancel_check)
             return run.result
         except Exception as exc:
             if attempt >= retry.max_retries or not retry.should_retry(exc):
                 raise
             attempt += 1
-            # Resume from wherever the failed attempt got to. ``run`` is
-            # None only if ``agent.iter()`` failed before yielding.
+            # Resume from wherever the failed attempt got to. `run` is
+            # None only if `agent.iter()` failed before yielding.
             if run is not None:
                 accumulated = run.all_messages()
                 if accumulated:

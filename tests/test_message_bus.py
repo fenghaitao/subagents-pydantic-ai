@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import pytest
 
 from subagents_pydantic_ai import InMemoryMessageBus, TaskManager, create_message_bus
-from subagents_pydantic_ai.types import AgentMessage, MessageType, TaskHandle
+from subagents_pydantic_ai.types import AgentMessage, MessageType, TaskHandle, TaskStatus
 
 
 class TestInMemoryMessageBus:
@@ -314,6 +315,10 @@ class TestTaskManager:
 
         assert "task-1" in task_manager.tasks
         assert handle.status == "running"
+        # create_task must assign the TaskStatus enum, not a bare string, so
+        # consumers doing isinstance(status, TaskStatus) checks keep working.
+        assert handle.status is TaskStatus.RUNNING
+        assert isinstance(handle.status, TaskStatus)
         assert handle.started_at is not None
 
         await task
@@ -420,7 +425,11 @@ class TestTaskManager:
 
     @pytest.mark.asyncio
     async def test_hard_cancel_already_done(self, task_manager: TaskManager):
-        """Test hard cancel for already completed task."""
+        """Test hard cancel for already completed task.
+
+        When the task already finished, hard_cancel must not clobber the
+        real outcome on the handle with a spurious `cancelled` status.
+        """
         handle = TaskHandle(
             task_id="task-1",
             subagent_name="worker",
@@ -434,8 +443,16 @@ class TestTaskManager:
         task = task_manager.create_task("task-1", quick_task(), handle)
         await task  # Wait for completion
 
+        # Simulate a run_task wrapper having recorded the real outcome.
+        completed_marker = datetime(2020, 1, 1)
+        handle.status = TaskStatus.COMPLETED
+        handle.completed_at = completed_marker
+
         result = await task_manager.hard_cancel("task-1")
         assert result is True  # Returns True but doesn't cancel
+        # The completed outcome must be preserved, not overwritten.
+        assert handle.status == TaskStatus.COMPLETED
+        assert handle.completed_at == completed_marker
 
     @pytest.mark.asyncio
     async def test_cleanup_task(self, task_manager: TaskManager):
@@ -496,8 +513,9 @@ class TestTaskManager:
             status="running",
         )
 
-        # Register the agent to receive cancel message
-        task_manager.message_bus.register_agent("worker")
+        # The subagent registers on the bus as `subagent-{task_id}` (see
+        # toolset.py), which is where the cancel request must be delivered.
+        task_manager.message_bus.register_agent("subagent-task-1")
 
         async def long_task():
             cancel_event = task_manager.get_cancel_event("task-1")
@@ -510,10 +528,11 @@ class TestTaskManager:
         result = await task_manager.soft_cancel("task-1")
         assert result is True
 
-        # Check that a cancel message was sent to the agent's queue
-        queue = task_manager.message_bus._queues["worker"]
+        # Check that a cancel message was sent to the subagent's queue
+        queue = task_manager.message_bus._queues["subagent-task-1"]
         msg = await asyncio.wait_for(queue.get(), timeout=1.0)
         assert msg.type == MessageType.CANCEL_REQUEST
+        assert msg.receiver == "subagent-task-1"
 
     @pytest.mark.asyncio
     async def test_hard_cancel_updates_handle(self, task_manager: TaskManager):

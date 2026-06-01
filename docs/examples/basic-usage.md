@@ -70,11 +70,37 @@ capabilities:
           instructions: You are a technical writer.
 ```
 
+YAML/JSON loading is handled by pydantic-ai's `Agent.from_file` (which builds an
+`AgentSpec` from the file). `SubAgentCapability` opts into this via its
+[`get_serialization_name()`][subagents_pydantic_ai.capability.SubAgentCapability]
+classmethod, which returns `"SubAgentCapability"` — the key used in the YAML
+above.
+
+Because `SubAgentCapability` is a third-party capability, pydantic-ai does not
+register it automatically: you must declare it with `custom_capability_types` so
+the deserializer can resolve the `SubAgentCapability:` block.
+
 ```python
 from pydantic_ai import Agent
+from subagents_pydantic_ai import SubAgentCapability
 
-agent = Agent.from_file("agent.yaml")
+agent = Agent.from_file(
+    "agent.yaml",
+    custom_capability_types=[SubAgentCapability],
+)
 ```
+
+Each entry under `subagents:` is loaded as a plain
+[`SubAgentConfig`][subagents_pydantic_ai.types.SubAgentConfig] dict.
+
+!!! note "`SubAgentSpec` vs `Agent.from_file`"
+    [`SubAgentSpec`][subagents_pydantic_ai.spec.SubAgentSpec] is a separate,
+    standalone Pydantic model for when you load and parse YAML/JSON **yourself**
+    (e.g. `specs = [SubAgentSpec(**s) for s in data["subagents"]]`, then
+    `spec.to_config()`). It is *not* part of the `Agent.from_file` path, which
+    deserializes the capability and its `subagents` dicts directly. Use
+    `SubAgentSpec` when you want validation and defaults for hand-loaded subagent
+    definitions.
 
 ## Using the Toolset API (Alternative)
 

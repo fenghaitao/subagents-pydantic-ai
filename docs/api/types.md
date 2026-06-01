@@ -7,6 +7,13 @@
       show_root_heading: true
       show_source: true
 
+## SubAgentSpec
+
+::: subagents_pydantic_ai.SubAgentSpec
+    options:
+      show_root_heading: true
+      show_source: true
+
 ## CompiledSubAgent
 
 ::: subagents_pydantic_ai.CompiledSubAgent
@@ -66,6 +73,20 @@
 ## ToolsetFactory
 
 ::: subagents_pydantic_ai.ToolsetFactory
+    options:
+      show_root_heading: true
+      show_source: true
+
+## UsageLimitsFactory
+
+::: subagents_pydantic_ai.UsageLimitsFactory
+    options:
+      show_root_heading: true
+      show_source: true
+
+## AskUserCallback
+
+::: subagents_pydantic_ai.AskUserCallback
     options:
       show_root_heading: true
       show_source: true
