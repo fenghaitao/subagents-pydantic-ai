@@ -12,7 +12,11 @@ import asyncio
 from typing import Any
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import AbstractCapability, ProcessEventStream
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.run import AgentRunResult
 from pydantic_graph import End
 
 from subagents_pydantic_ai import (
@@ -26,11 +30,6 @@ from subagents_pydantic_ai import (
 )
 from subagents_pydantic_ai.toolset import _run_async
 from subagents_pydantic_ai.types import SubAgentConfig
-from pydantic_ai import Agent
-from pydantic_ai.capabilities import ProcessEventStream
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.run import AgentRunResult
 
 pytestmark = pytest.mark.asyncio
 

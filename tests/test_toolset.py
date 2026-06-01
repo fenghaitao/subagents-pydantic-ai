@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 from pydantic_ai import UsageLimits
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.toolsets import FunctionToolset
+from pydantic_graph import End
 
 from subagents_pydantic_ai import SubAgentConfig, create_subagent_toolset
 from subagents_pydantic_ai.toolset import (
@@ -18,11 +23,6 @@ from subagents_pydantic_ai.toolset import (
     _run_sync,
 )
 from subagents_pydantic_ai.types import CompiledSubAgent, TaskPriority, TaskStatus
-from pydantic_graph import End
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.toolsets import FunctionToolset
-from datetime import datetime
-from pydantic import BaseModel
 
 
 @dataclass
