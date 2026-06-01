@@ -77,7 +77,6 @@ class _FakeRun:
         self.next_node: Any = object()  # non-End sentinel
 
     async def next(self, node: Any) -> Any:
-
         return End(self.result)
 
     def all_messages(self) -> list[Any]:
@@ -1596,7 +1595,6 @@ class TestToolsetFunctionsCoverage:
         )
 
         def mock_toolsets_factory(deps):
-
             return [FunctionToolset(id="mock")]
 
         with patch(
@@ -1637,7 +1635,6 @@ class TestToolsetFunctionsCoverage:
         )
 
         def mock_toolsets_factory(deps):
-
             return [FunctionToolset(id="mock")]
 
         with patch(
@@ -2885,7 +2882,6 @@ class TestSerializeOutput:
         assert _serialize_output("hello") == "hello"
 
     def test_pydantic_model(self):
-
         from subagents_pydantic_ai.toolset import _serialize_output
 
         class MyModel(BaseModel):
