@@ -15,6 +15,14 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability, ProcessEventStream
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.run import AgentRunResult
 from pydantic_graph import End
@@ -29,7 +37,7 @@ from subagents_pydantic_ai import (
     run_with_retry,
 )
 from subagents_pydantic_ai.toolset import _run_async
-from subagents_pydantic_ai.types import SubAgentConfig
+from subagents_pydantic_ai.types import AgentMessage, MessageType, SubAgentConfig
 
 pytestmark = pytest.mark.asyncio
 
@@ -785,3 +793,120 @@ async def test_streaming_drive_breaks_on_wrap_run_short_circuit() -> None:
 
     assert result is short_circuit
     assert events == []
+
+
+def _make_tool_then_text_model(captured: dict[str, Any]) -> Any:
+    """FunctionModel: call tool `dig` on the first turn, then emit final text.
+
+    Records, on the second model request, every `UserPromptPart` content the
+    model can see — so a test can assert injected steering arrived.
+    """
+
+    def model_fn(messages: list[Any], info: AgentInfo) -> Any:
+        n_responses = sum(1 for m in messages if isinstance(m, ModelResponse))
+        if n_responses == 0:
+            return ModelResponse(parts=[ToolCallPart(tool_name="dig", args={})])
+        captured["texts"] = [
+            p.content
+            for m in messages
+            if isinstance(m, ModelRequest)
+            for p in m.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    return FunctionModel(model_fn)
+
+
+async def test_inject_messages_folded_into_next_model_request() -> None:
+    """Pending steering is appended to the subagent's next model request."""
+    captured: dict[str, Any] = {}
+    agent = Agent(_make_tool_then_text_model(captured))
+
+    @agent.tool_plain
+    def dig() -> str:
+        return "dug"
+
+    calls = {"n": 0}
+
+    async def inject() -> list[str]:
+        calls["n"] += 1
+        # Nothing before the first request; steering arrives before the second.
+        return ["narrow to packages/sparta/"] if calls["n"] == 2 else []
+
+    result = await run_with_retry(
+        agent,
+        "search the repo",
+        run_kwargs={},
+        retry=RetryConfig(max_retries=3, jitter=False),
+        inject_messages=inject,
+    )
+
+    assert result.output == "done"
+    assert "narrow to packages/sparta/" in captured["texts"]
+    # Polled once per model-request node (before request 1 and request 2),
+    # never around the intervening tool-call node.
+    assert calls["n"] == 2
+
+
+async def test_run_async_steering_message_reaches_subagent() -> None:
+    """End-to-end: a steering message sent mid-run is seen on the next request."""
+    captured: dict[str, Any] = {}
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    def model_fn(messages: list[Any], info: AgentInfo) -> Any:
+        n_responses = sum(1 for m in messages if isinstance(m, ModelResponse))
+        if n_responses == 0:
+            return ModelResponse(parts=[ToolCallPart(tool_name="hold", args={})])
+        captured["texts"] = [
+            p.content
+            for m in messages
+            if isinstance(m, ModelRequest)
+            for p in m.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent = Agent(FunctionModel(model_fn))
+
+    @agent.tool_plain
+    async def hold() -> str:
+        # Park the subagent between request 1 and request 2 so the test can
+        # deliver a steering message at a deterministic point.
+        parked.set()
+        await release.wait()
+        return "held"
+
+    config = SubAgentConfig(name="t", description="d", instructions="i")
+    bus = InMemoryMessageBus()
+    tm = TaskManager(message_bus=bus)
+
+    await _run_async(
+        agent=agent,
+        config=config,
+        description="go",
+        deps=FakeDeps(),
+        task_id="steer-1",
+        task_manager=tm,
+        message_bus=bus,
+    )
+    bg_task = tm.tasks["steer-1"]
+
+    await asyncio.wait_for(parked.wait(), timeout=2.0)
+    await bus.send(
+        AgentMessage(
+            type=MessageType.TASK_UPDATE,
+            sender="parent",
+            receiver="subagent-steer-1",
+            payload={"message": "STEER NOW"},
+            task_id="steer-1",
+        )
+    )
+    release.set()
+    await asyncio.wait_for(bg_task, timeout=2.0)
+
+    assert "STEER NOW" in captured["texts"]
+    handle = tm.get_handle("steer-1")
+    assert handle is not None
+    assert handle.status == TaskStatus.COMPLETED

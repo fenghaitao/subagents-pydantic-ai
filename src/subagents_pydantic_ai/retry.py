@@ -35,6 +35,7 @@ from typing import Any
 
 from pydantic_ai import _agent_graph
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import UserPromptPart
 from pydantic_graph import End
 
 from subagents_pydantic_ai.types import SubAgentConfig
@@ -163,6 +164,7 @@ async def _drive_run(
     run: Any,
     event_stream_handler: Any,
     cancel_check: Callable[[], bool] | None = None,
+    inject_messages: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> None:
     """Advance *run* to completion, firing the same hooks as :meth:`Agent.run`.
 
@@ -181,6 +183,14 @@ async def _drive_run(
     preserved on the accumulated history. Because `CancelledError` is a
     `BaseException` it is not caught by the retry loop and propagates to the
     caller's cancellation handling unchanged.
+
+    `inject_messages` enables unprompted parent -> child steering: it is
+    awaited just before each model-request node and returns any pending
+    steering messages, which are appended as :class:`UserPromptPart`s to that
+    request. The subagent therefore sees them as extra user instructions on
+    its very next model turn, keeping all partial progress. Injecting only at
+    model-request boundaries (not before tool execution) guarantees the parts
+    are never spliced into a tool-call/tool-return pair.
     """
 
     _stream_step: Any = None
@@ -211,6 +221,16 @@ async def _drive_run(
         # A capability's wrap_run short-circuit can publish the result early.
         if run.result is not None:
             break
+        # Fold pending parent -> child steering into the upcoming request. Only
+        # at a model-request boundary, so a UserPromptPart is never spliced
+        # between a tool call and its return.
+        if inject_messages is not None and isinstance(node, _agent_graph.ModelRequestNode):
+            steering = await inject_messages()
+            if steering:
+                node.request.parts = [
+                    *node.request.parts,
+                    *(UserPromptPart(content=text) for text in steering),
+                ]
         if _stream_step is not None:
             node = await run._run_node_with_hooks(node, _stream_step)
         else:
@@ -227,6 +247,7 @@ async def run_with_retry(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     event_stream_handler: Any | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    inject_messages: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> Any:
     """Run *agent* with auto-retry on transient errors.
 
@@ -261,6 +282,12 @@ async def run_with_retry(
             (`max_retries > 0`); the legacy `agent.run()` fast path
             (`max_retries <= 0`) does not expose node boundaries, so soft
             cancel is best-effort there.
+        inject_messages: Optional async callable awaited before each model
+            request; its returned strings are appended to that request as
+            user instructions (unprompted parent -> child steering). Like
+            `cancel_check`, only honoured on the retry-driven path
+            (`max_retries > 0`); the legacy `agent.run()` fast path does not
+            expose node boundaries, so steering messages stay queued there.
 
     Returns:
         The `AgentRunResult` of the first successful attempt.
@@ -289,7 +316,7 @@ async def run_with_retry(
         run = None
         try:
             async with agent.iter(prompt, message_history=message_history, **run_kwargs) as run:
-                await _drive_run(agent, run, handler, cancel_check)
+                await _drive_run(agent, run, handler, cancel_check, inject_messages)
             return run.result
         except Exception as exc:
             if attempt >= retry.max_retries or not retry.should_retry(exc):
