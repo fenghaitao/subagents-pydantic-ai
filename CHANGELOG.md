@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-04
+
+### Added
+
+- **Unprompted parent -> child steering via `send_message_to_subagent`** ([#28](https://github.com/vstorm-co/subagents-pydantic-ai/issues/28)). A parent agent can now steer a running **async** subagent mid-flight without cancelling it — e.g. "narrow the search to `packages/sparta/`, it isn't in `core/`" — so the subagent adapts on its next step while keeping all partial progress, instead of the lossy cancel-and-respawn pattern. The new `send_message_to_subagent(task_id, message)` tool enqueues a `TASK_UPDATE` on the message bus for `subagent-{task_id}`; the run loop drains it at the next model-request boundary (`_drive_run` gained an `inject_messages` hook alongside the existing `cancel_check`) and folds each message into that request as an extra `UserPromptPart`. Injecting only at model-request boundaries guarantees a steering part is never spliced into a tool-call/tool-return pair. This is distinct from `answer_subagent`, which only replies to a question the subagent already asked via `ask_parent`. Sending to a finished or unknown task returns a clear error. Honoured on the retry-driven run path (`max_retries > 0`, the default); the legacy `agent.run()` fast path (`max_retries == 0`) does not expose node boundaries, so steering messages stay queued there.
+
 ## [0.2.6] - 2026-06-01
 
 ### Changed

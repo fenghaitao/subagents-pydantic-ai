@@ -141,6 +141,20 @@ showing `mode`, `<finished>/<total> finished`, and how many are still \
 running. Unfinished tasks remain in the background — you can keep working \
 or wait on them again later."""
 
+SEND_MESSAGE_TO_SUBAGENT_DESCRIPTION = """\
+Send a steering message to a running background (async) subagent without \
+cancelling it.
+
+Use this to redirect or refine a long-running task mid-flight when you learn \
+something new — e.g. "narrow the search to packages/sparta/, it isn't in \
+core/" or "stop after the first 5 matches". The subagent receives your message \
+as an extra user instruction on its next step and adapts, keeping all partial \
+progress (unlike cancel-and-respawn).
+
+This is unprompted parent -> child steering — distinct from `answer_subagent`, \
+which only replies to a question the subagent already asked. It applies to \
+async tasks only; the target must still be running."""
+
 SOFT_CANCEL_TASK_DESCRIPTION = """\
 Request cooperative cancellation of a background task. The subagent will be \
 notified and can clean up before stopping. Use this for graceful cancellation."""

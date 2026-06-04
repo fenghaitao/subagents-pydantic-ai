@@ -129,6 +129,40 @@ Answer a question from a blocked subagent.
 answer_subagent(task_id="abc123", answer="Use PostgreSQL for this project")
 ```
 
+### send_message_to_subagent
+
+Steer a running **async** subagent mid-flight, without cancelling it. Use this
+when you learn something new while a long task is in progress and want to
+redirect or narrow it — the subagent keeps all its partial progress.
+
+```python
+# The agent calls:
+send_message_to_subagent(
+    task_id="abc123",
+    message="narrow the search to packages/sparta/ — it isn't in core/",
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task_id` | `str` | Task ID of the running async subagent |
+| `message` | `str` | Steering instruction to deliver |
+
+The message is folded into the subagent's **next model request** as an extra
+user instruction, so it adapts on its next step. This is unprompted parent ->
+child steering, distinct from `answer_subagent` (which only replies to a
+question the subagent already asked via `ask_parent`). It applies to async
+tasks that are still running; messages to a finished or unknown task return an
+error.
+
+!!! note
+    Steering is delivered at model-request boundaries on the retry-driven run
+    path, which is the default (`max_retries > 0`). If you explicitly set
+    `max_retries=0` on a subagent, it runs via the legacy single-shot path and
+    steering messages stay queued instead of being applied.
+
 ### list_active_tasks
 
 List all running background tasks.

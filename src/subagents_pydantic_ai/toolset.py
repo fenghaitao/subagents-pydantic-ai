@@ -23,6 +23,7 @@ from subagents_pydantic_ai.prompts import (
     DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
     HARD_CANCEL_TASK_DESCRIPTION,
     LIST_ACTIVE_TASKS_DESCRIPTION,
+    SEND_MESSAGE_TO_SUBAGENT_DESCRIPTION,
     SOFT_CANCEL_TASK_DESCRIPTION,
     SUBAGENT_SYSTEM_PROMPT,
     TASK_TOOL_DESCRIPTION,
@@ -32,9 +33,11 @@ from subagents_pydantic_ai.prompts import (
 from subagents_pydantic_ai.protocols import SubAgentDepsProtocol
 from subagents_pydantic_ai.retry import RetryConfig, run_with_retry
 from subagents_pydantic_ai.types import (
+    AgentMessage,
     AskUserCallback,
     CompiledSubAgent,
     ExecutionMode,
+    MessageType,
     SubAgentConfig,
     TaskCharacteristics,
     TaskHandle,
@@ -61,6 +64,34 @@ def _serialize_output(output: Any) -> str:
 
         return json.dumps(dataclasses.asdict(output), default=str)
     return str(output)
+
+
+async def _drain_steering_messages(message_bus: InMemoryMessageBus, agent_id: str) -> list[str]:
+    """Drain pending parent -> child steering messages for a running subagent.
+
+    Pulls everything currently queued for ``agent_id`` and returns the text of
+    each ``TASK_UPDATE`` (the message type emitted by ``send_message_to_subagent``).
+    Other message types on the queue (e.g. an unused ``CANCEL_REQUEST`` — soft
+    cancel runs off the cancel event, not the bus) are ignored, as are empty
+    payloads.
+
+    Args:
+        message_bus: The bus the running subagent is registered on.
+        agent_id: The subagent's bus id (``subagent-{task_id}``).
+
+    Returns:
+        Steering instructions in delivery order (may be empty).
+    """
+    pending = await message_bus.get_messages(agent_id, timeout=0)
+    steering: list[str] = []
+    for msg in pending:
+        if msg.type != MessageType.TASK_UPDATE:
+            continue
+        payload = msg.payload
+        text = payload.get("message") if isinstance(payload, dict) else payload
+        if text:
+            steering.append(str(text))
+    return steering
 
 
 def _create_general_purpose_config() -> SubAgentConfig:
@@ -468,6 +499,50 @@ def create_subagent_toolset(  # noqa: C901
 
         return "Error: Could not send answer - subagent is no longer waiting"
 
+    @toolset.tool(
+        description=_descs.get("send_message_to_subagent", SEND_MESSAGE_TO_SUBAGENT_DESCRIPTION)
+    )
+    async def send_message_to_subagent(
+        ctx: RunContext[SubAgentDepsProtocol],
+        task_id: str,
+        message: str,
+    ) -> str:
+        """Steer a running async subagent with an unprompted message.
+
+        The message is queued for the subagent and folded into its next model
+        request as an extra user instruction, so it adapts without losing
+        partial progress. Works only while the task is still running.
+
+        Args:
+            ctx: The run context.
+            task_id: The task ID of the running async subagent.
+            message: The steering instruction to deliver.
+        """
+        agent_id = f"subagent-{task_id}"
+        if not message_bus.is_registered(agent_id):
+            handle = task_manager.get_handle(task_id)
+            if handle is None:
+                return f"Error: Task '{task_id}' not found"
+            return (
+                f"Error: Task '{task_id}' is not accepting messages "
+                f"(status: {handle.status}). Steering only works for running "
+                "async tasks."
+            )
+
+        await message_bus.send(
+            AgentMessage(
+                type=MessageType.TASK_UPDATE,
+                sender="parent",
+                receiver=agent_id,
+                payload={"message": message},
+                task_id=task_id,
+            )
+        )
+        return (
+            f"Message delivered to task '{task_id}'; "
+            "it will be applied on the subagent's next step."
+        )
+
     @toolset.tool(description=_descs.get("list_active_tasks", LIST_ACTIVE_TASKS_DESCRIPTION))
     async def list_active_tasks(
         ctx: RunContext[SubAgentDepsProtocol],
@@ -759,6 +834,9 @@ async def _run_async(
             cancel_event = task_manager.get_cancel_event(task_id)
             return cancel_event is not None and cancel_event.is_set()
 
+        async def _pending_steering() -> list[str]:
+            return await _drain_steering_messages(message_bus, agent_id)
+
         try:
             result = await run_with_retry(
                 agent,
@@ -767,6 +845,7 @@ async def _run_async(
                 retry=RetryConfig.from_config(config),
                 on_retry=_on_retry,
                 cancel_check=_cancel_requested,
+                inject_messages=_pending_steering,
             )
             handle.result = _serialize_output(result.output)
             handle.error = None
