@@ -221,12 +221,9 @@ async def _drive_run(
         # A capability's wrap_run short-circuit can publish the result early.
         if run.result is not None:
             break
-        # Unprompted parent -> child steering: fold any pending messages into
-        # the upcoming model request so the subagent reads them on its next
-        # turn. Only at a model-request boundary, so a UserPromptPart is never
-        # inserted between a tool call and its return. An isinstance check
-        # (rather than agent.is_model_request_node) keeps this independent of
-        # the agent object — it inspects the graph node directly.
+        # Fold pending parent -> child steering into the upcoming request. Only
+        # at a model-request boundary, so a UserPromptPart is never spliced
+        # between a tool call and its return.
         if inject_messages is not None and isinstance(node, _agent_graph.ModelRequestNode):
             steering = await inject_messages()
             if steering:

@@ -3083,7 +3083,7 @@ class TestDrainSteeringMessages:
             )
 
         assert await _drain_steering_messages(bus, "subagent-x") == ["first", "second"]
-        # Queue is drained.
+        # A second drain returns nothing — the queue was consumed.
         assert await _drain_steering_messages(bus, "subagent-x") == []
 
     @pytest.mark.asyncio

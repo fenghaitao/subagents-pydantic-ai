@@ -15,6 +15,14 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability, ProcessEventStream
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.run import AgentRunResult
 from pydantic_graph import End
@@ -29,7 +37,7 @@ from subagents_pydantic_ai import (
     run_with_retry,
 )
 from subagents_pydantic_ai.toolset import _run_async
-from subagents_pydantic_ai.types import SubAgentConfig
+from subagents_pydantic_ai.types import AgentMessage, MessageType, SubAgentConfig
 
 pytestmark = pytest.mark.asyncio
 
@@ -787,25 +795,12 @@ async def test_streaming_drive_breaks_on_wrap_run_short_circuit() -> None:
     assert events == []
 
 
-# --------------------------------------------------------------------------- #
-# run_with_retry - unprompted parent -> child steering (inject_messages)
-# --------------------------------------------------------------------------- #
-
-
 def _make_tool_then_text_model(captured: dict[str, Any]) -> Any:
     """FunctionModel: call tool `dig` on the first turn, then emit final text.
 
     Records, on the second model request, every `UserPromptPart` content the
     model can see — so a test can assert injected steering arrived.
     """
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        TextPart,
-        ToolCallPart,
-        UserPromptPart,
-    )
-    from pydantic_ai.models.function import AgentInfo, FunctionModel
 
     def model_fn(messages: list[Any], info: AgentInfo) -> Any:
         n_responses = sum(1 for m in messages if isinstance(m, ModelResponse))
@@ -856,17 +851,6 @@ async def test_inject_messages_folded_into_next_model_request() -> None:
 
 async def test_run_async_steering_message_reaches_subagent() -> None:
     """End-to-end: a steering message sent mid-run is seen on the next request."""
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        TextPart,
-        ToolCallPart,
-        UserPromptPart,
-    )
-    from pydantic_ai.models.function import AgentInfo, FunctionModel
-
-    from subagents_pydantic_ai.types import AgentMessage, MessageType
-
     captured: dict[str, Any] = {}
     parked = asyncio.Event()
     release = asyncio.Event()
