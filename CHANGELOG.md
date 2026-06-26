@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-06-26
+
+### Fixed
+
+- **pydantic-ai 2.0 compatibility: `'RunUsage' object is not callable`.** The post-run observability step captured usage via `result.usage()`, but pydantic-ai 2.0 turned `AgentRunResult.usage` from a method into a property returning `RunUsage`. Calling it raised inside the `try` that marks a task complete, flipping an otherwise-successful subagent run to `FAILED` — so every delegated task errored. Usage is now read as the `result.usage` property.
+
+### Changed
+
+- **Require `pydantic-ai-slim>=2.0`** (was `>=1.74.0`): the package now targets the 2.0 API (`result.usage` property; context-less tools registered via `tool_plain`, which 2.0 made a hard requirement rather than a deprecation).
+
 ## [0.2.7] - 2026-06-04
 
 ### Added
