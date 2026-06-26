@@ -59,7 +59,9 @@ class MockResult:
         self.output = output
         self._usage = MockUsage()
 
+    @property
     def usage(self) -> MockUsage:
+        # pydantic-ai 2.0: `AgentRunResult.usage` is a property, not a method.
         return self._usage
 
 
@@ -247,7 +249,7 @@ class TestCompileSubagent:
 
         custom_toolset: FunctionToolset[Any] = FunctionToolset(id="custom")
 
-        @custom_toolset.tool
+        @custom_toolset.tool_plain
         async def custom_tool(x: str) -> str:
             return x
 

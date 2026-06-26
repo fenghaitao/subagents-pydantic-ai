@@ -850,7 +850,10 @@ async def _run_async(
             handle.result = _serialize_output(result.output)
             handle.error = None
             if hasattr(result, "usage"):
-                handle.usage = result.usage()
+                # pydantic-ai 2.0 made `usage` a property (was a method); calling
+                # it raises "'RunUsage' object is not callable" and would flip a
+                # successful run to FAILED.
+                handle.usage = result.usage
             handle.status = TaskStatus.COMPLETED
         except asyncio.CancelledError:
             handle.status = TaskStatus.CANCELLED
